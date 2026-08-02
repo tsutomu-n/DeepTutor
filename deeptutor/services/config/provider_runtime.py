@@ -220,6 +220,13 @@ class VoiceProviderSpec:
 # of these; bespoke providers (DashScope native, ElevenLabs, Gemini, Deepgram)
 # would register their own ``adapter`` value once implemented.
 TTS_PROVIDERS: dict[str, VoiceProviderSpec] = {
+    "edge_tts": VoiceProviderSpec(
+        label="Edge TTS (Online)",
+        default_api_base="",
+        adapter="edge_tts",
+        default_model="edge-tts",
+        default_voice="ja-JP-NanamiNeural",
+    ),
     "openai": VoiceProviderSpec(
         label="OpenAI",
         default_api_base="https://api.openai.com/v1",
@@ -268,6 +275,13 @@ TTS_PROVIDERS: dict[str, VoiceProviderSpec] = {
 }
 
 STT_PROVIDERS: dict[str, VoiceProviderSpec] = {
+    "sherpa_onnx": VoiceProviderSpec(
+        label="sherpa-onnx (Local)",
+        default_api_base="",
+        adapter="sherpa_onnx",
+        default_model="",
+        is_local=True,
+    ),
     "openai": VoiceProviderSpec(
         label="OpenAI",
         default_api_base="https://api.openai.com/v1",

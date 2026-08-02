@@ -1,0 +1,2 @@
+sherpa-onnx==1.13.4
+sherpa-onnx-bin==1.13.4

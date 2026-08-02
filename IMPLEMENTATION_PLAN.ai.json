@@ -1,0 +1,410 @@
+{
+  "schema_version": "1.0",
+  "updated_at": "2026-08-02_22:45",
+  "timezone": "Asia/Tokyo",
+  "status": "in_progress",
+  "current_checkpoint": "CP-12",
+  "repository": {
+    "path": "/home/tn/projects/DeepTutor",
+    "github": "tsutomu-n/DeepTutor",
+    "baseline_version": "1.5.8",
+    "baseline_commit": "44fa7a1552b88f9d8ce2c22259128a15ae2eb0c8",
+    "branch": "tjm/implementation",
+    "target_branch": "main",
+    "merge_authorized": false
+  },
+  "goal": "DeepTutorを基盤に、試験固有設定を中核コードへ固定しない択一試験学習機能TJMを完成させる",
+  "assumptions": [
+    "初期の問題取り込み、レビュー、公開権限は既存adminに限定する",
+    "実宅建問題本文は正当なデータ提供まで同梱しない",
+    "正式問題と回答履歴は既存AI Quiz保存領域と分離する",
+    "npm基準が安定する限りBun移行はTJM本体より後に評価する"
+  ],
+  "invariants": [
+    "LLMは正式正解、採点、公開、回答履歴を変更しない",
+    "公開済み問題版は不変である",
+    "試験提出前の応答は正解、解説、採点結果を含まない",
+    "音声認識文字列は確認後だけ正式回答になる",
+    "音声またはAI障害時も画面操作を継続できる",
+    "試験の問題数、分野名、制限時間をPythonまたはTypeScript定数へ固定しない"
+  ],
+  "planned_storage": {
+    "engine": "SQLite",
+    "separate_from_chat_history": true,
+    "databases": [
+      {
+        "name": "catalog",
+        "scope": "deployment_system",
+        "path": "data/system/tjm/catalog.db",
+        "write_role": "admin",
+        "tables": [
+          "schema_migrations",
+          "exam_definitions",
+          "questions",
+          "question_versions",
+          "review_events",
+          "import_batches"
+        ]
+      },
+      {
+        "name": "learning",
+        "scope": "per_user_path_service",
+        "path": "<user-root>/user/tjm_learning.db",
+        "tables": [
+          "schema_migrations",
+          "attempts",
+          "attempt_items",
+          "answer_events",
+          "review_queue"
+        ]
+      }
+    ]
+  },
+  "baseline": {
+    "repository_diff": "none",
+    "python": "3.12.12",
+    "python_lockfile_present": false,
+    "current_python_lockfile": "uv.lock",
+    "python_dependencies": {
+      "status": "passed",
+      "installed_packages": 170
+    },
+    "python_tests": {
+      "status": "passed",
+      "passed": 3555,
+      "skipped": 8,
+      "warnings": 205,
+      "seconds": 42.33
+    },
+    "ruff": {
+      "status": "passed",
+      "formatted_files_checked": 1134
+    },
+    "mypy": {
+      "status": "baseline_failed",
+      "reason": "pyprojectのPython 3.11設定でNumPy 2.5.1 stubのPython 3.12 type statementを解析できない"
+    },
+    "local_node": "24.14.0",
+    "ci_docker_node": "22",
+    "npm_install": {
+      "status": "passed",
+      "packages": 774
+    },
+    "npm_audit": {
+      "status": "baseline_risk",
+      "low": 1,
+      "moderate": 4,
+      "high": 5,
+      "critical": 0
+    },
+    "web_node_tests": {
+      "status": "passed",
+      "passed": 366
+    },
+    "eslint": {
+      "status": "passed_with_warnings",
+      "errors": 0,
+      "warnings": 56
+    },
+    "typescript": {
+      "status": "passed"
+    },
+    "next_build": {
+      "status": "passed",
+      "routes": 57
+    },
+    "python_build": {
+      "status": "passed",
+      "artifacts": [
+        "dist/deeptutor-1.5.8.tar.gz",
+        "dist/deeptutor-1.5.8-py3-none-any.whl"
+      ]
+    },
+    "docker_build": {
+      "status": "passed",
+      "default_target": {
+        "target": "development",
+        "tag": "deeptutor-tjm:cp04",
+        "image_id": "sha256:8cabcca152d5fc4484676e64567475ca35ff3b89046fc54e3195bb0b2518a626",
+        "size_bytes": 714288009
+      },
+      "production_target": {
+        "tag": "deeptutor-tjm:cp04-production",
+        "image_id": "sha256:5095fe6410e25228e408a0de3c67946200a99dcec649af948c760fd7c0f30236",
+        "size_bytes": 450313679,
+        "python": "3.11.15",
+        "node": "22.23.2",
+        "deeptutor": "1.5.8",
+        "app_import": "passed"
+      }
+    },
+    "cp05": {
+      "status": "passed",
+      "catalog_schema_version": 2,
+      "learning_schema_version": 1,
+      "published_version_sqlite_guards": "passed",
+      "review_before_publish": "passed",
+      "deterministic_grading": "passed",
+      "tests": {
+        "passed": 26,
+        "command": "pytest -q tests/tjm tests/services/test_path_service.py tests/multi_user/test_identity_and_paths.py"
+      },
+      "ruff": "passed"
+    },
+    "cp06": {
+      "status": "passed",
+      "formats": ["json", "jsonl", "csv"],
+      "all_or_nothing": "passed",
+      "failed_batch_audit": "passed",
+      "identical_content_deduplication": "passed",
+      "admin_review_workflow": "passed",
+      "tests": {
+        "passed": 31,
+        "command": "pytest -q tests/tjm tests/api/test_tjm_router.py"
+      },
+      "ruff": "passed"
+    },
+    "cp07": {
+      "status": "passed",
+      "blueprint_activation_gate": "passed",
+      "fixed_attempt_order_after_restart": "passed",
+      "append_only_answer_events": "passed",
+      "practice_feedback": "after_confirm",
+      "exam_feedback": "after_submit",
+      "deadline_and_double_submit": "passed",
+      "per_user_attempt_isolation": "passed",
+      "tests": {
+        "passed": 41,
+        "command": "pytest -q tests/tjm tests/api/test_tjm_router.py"
+      },
+      "ruff": "passed"
+    },
+    "cp08": {
+      "status": "passed",
+      "review_reasons": ["incorrect", "low_confidence", "hint_used", "slow_correct"],
+      "review_attempt": "passed",
+      "analytics": ["overall", "by_area", "confidence", "time", "hint_use", "trend"],
+      "empty_partial_retired_cases": "passed",
+      "tests": {
+        "passed": 45,
+        "command": "pytest -q tests/tjm tests/api/test_tjm_router.py"
+      },
+      "ruff": "passed"
+    },
+    "cp09": {
+      "status": "passed",
+      "route": "/tjm",
+      "server_authoritative_grading": "passed",
+      "in_progress_exam_client_grade_stripping": "passed",
+      "attempt_reload": "passed",
+      "admin_import_review_publish": "passed",
+      "concurrent_sqlite_migration": "passed",
+      "web_node_tests": 371,
+      "typescript": "passed",
+      "eslint": {
+        "errors": 0,
+        "warnings": 56,
+        "warning_delta_from_baseline": 0
+      },
+      "next_build": {
+        "status": "passed",
+        "routes": 58
+      },
+      "browser": {
+        "desktop": "passed",
+        "viewport_375px": "passed",
+        "initial_api_status": "all_200",
+        "console_errors": 0
+      }
+    },
+    "cp10": {
+      "status": "passed",
+      "voice_answer_boundary": {
+        "candidate_does_not_save_answer": "passed",
+        "cancel_does_not_save_answer": "passed",
+        "confirm_is_only_voice_save_path": "passed",
+        "ambiguous_transcript": "rejected",
+        "double_confirm": "rejected_409"
+      },
+      "vad": {
+        "package": "@ricky0123/vad-web@0.0.30",
+        "model": "silero_vad_v5",
+        "assets": "self_hosted_at_/vad/",
+        "cdn_dependency": false,
+        "browser_fake_microphone_e2e": "passed",
+        "speech_start": "passed",
+        "speech_end": "passed",
+        "stale_callback_guard": "passed"
+      },
+      "sherpa_onnx": {
+        "version": "1.13.4",
+        "model": "reazon-research/reazonspeech-k2-v2_int8",
+        "model_files_mebibytes_approx": 162,
+        "audio_seconds": 3.0,
+        "transcript": "選択肢の二番を選びます",
+        "cold_seconds": 1.549313,
+        "cold_rtf": 0.516438,
+        "warm_seconds": [0.076699, 0.067055],
+        "warm_rtf": [0.025566, 0.022352],
+        "platform": "Linux_x86_64_cpu_4_threads",
+        "model_bundled": false
+      },
+      "edge_tts": {
+        "version": "7.2.8",
+        "role": "optional_exchangeable_online_adapter",
+        "automatic_fallback": false
+      },
+      "web": {
+        "node_tests_passed": 374,
+        "typescript": "passed",
+        "eslint_errors": 0,
+        "eslint_warnings": 56,
+        "eslint_warning_delta_from_baseline": 0,
+        "next_routes": 58,
+        "viewport_375px": "passed",
+        "voice_failure_screen_fallback": "passed"
+      },
+      "targeted_python_tests": {
+        "passed": 98,
+        "warnings": 205
+      }
+    },
+    "cp11": {
+      "status": "passed",
+      "contract_audit": {
+        "review_mode_bypass": "fixed_and_regression_tested",
+        "review_attempt_only_endpoint": "/api/v1/tjm/review/attempts",
+        "missing_exam_patch_contract": "implemented_and_regression_tested",
+        "active_exam_update": "rejected"
+      },
+      "python": {
+        "tests_passed": 3611,
+        "tests_skipped": 8,
+        "warnings": 211,
+        "seconds": 34.87,
+        "ruff": "passed",
+        "changed_files_mypy_python_3_12": "passed",
+        "full_mypy": "same_baseline_numpy_stub_python_3_11_failure",
+        "uv_lock_packages": 383,
+        "uv_build": "passed"
+      },
+      "web": {
+        "node_tests_passed": 374,
+        "eslint_errors": 0,
+        "eslint_warnings": 56,
+        "typescript": "passed",
+        "next_version": "16.2.12",
+        "next_routes": 58,
+        "vad_assets": 4
+      },
+      "npm_audit": {
+        "baseline_total": 10,
+        "current_total": 5,
+        "low": 0,
+        "moderate": 2,
+        "high": 3,
+        "critical": 0,
+        "remaining": [
+          "next@16.2.12 -> postcss@8.4.31",
+          "next@16.2.12 -> sharp@0.34.5",
+          "exceljs@4.4.0 -> uuid@8.3.2"
+        ],
+        "unsafe_force_fix": "not_applied"
+      },
+      "bun_evaluation": {
+        "version": "1.3.14",
+        "decision": "keep_npm_and_node_22_canonical",
+        "reason": "frozen dry-run migrated package-lock and wrote bun.lock; CI and Docker use npm"
+      },
+      "docker": {
+        "target": "production",
+        "tag": "deeptutor-tjm:cp11-production",
+        "status": "passed",
+        "size_bytes": 456783066,
+        "node": "22.23.2",
+        "deeptutor": "1.5.8",
+        "tjm_routes": 24,
+        "frontend_tjm_http": 200,
+        "container_health": "healthy",
+        "optional_voice_extras_bundled": false
+      },
+      "release_audit": {
+        "placeholder_or_fake_success": "not_found",
+        "llm_grading_path": "not_found",
+        "pre_submit_exam_answer_leak": "not_found",
+        "diff_check": "passed"
+      }
+    }
+  },
+  "residual_risks": [
+    "npm audit remains at 5 transitive findings; npm's automatic fix proposes destructive downgrades",
+    "Docker requirements installation does not consume uv.lock",
+    "full mypy remains blocked by the baseline Python 3.11 and NumPy stub mismatch",
+    "licensed Takken question data and the sherpa model are not bundled",
+    "TJM workspace detailed copy is English-first; only global navigation follows the existing en/zh catalog"
+  ],
+  "checkpoints": [
+    {
+      "id": "CP-04",
+      "title": "変更前ベースラインの確定",
+      "status": "completed",
+      "depends_on": []
+    },
+    {
+      "id": "CP-05",
+      "title": "TJMドメインとSQLite契約",
+      "status": "completed",
+      "depends_on": ["CP-04"]
+    },
+    {
+      "id": "CP-06",
+      "title": "取り込みと人間レビュー",
+      "status": "completed",
+      "depends_on": ["CP-05"]
+    },
+    {
+      "id": "CP-07",
+      "title": "通常演習、試験、回答履歴",
+      "status": "completed",
+      "depends_on": ["CP-05", "CP-06"]
+    },
+    {
+      "id": "CP-08",
+      "title": "復習と履歴分析",
+      "status": "completed",
+      "depends_on": ["CP-07"]
+    },
+    {
+      "id": "CP-09",
+      "title": "Web学習導線",
+      "status": "completed",
+      "depends_on": ["CP-06", "CP-07", "CP-08"]
+    },
+    {
+      "id": "CP-10",
+      "title": "読み上げと確認付き音声回答",
+      "status": "completed",
+      "depends_on": ["CP-09"]
+    },
+    {
+      "id": "CP-11",
+      "title": "全体検証と安全性監査",
+      "status": "completed",
+      "depends_on": ["CP-05", "CP-06", "CP-07", "CP-08", "CP-09", "CP-10"]
+    },
+    {
+      "id": "CP-12",
+      "title": "commit、push、Draft PR",
+      "status": "in_progress",
+      "depends_on": ["CP-11"]
+    }
+  ],
+  "stop_conditions": [
+    "未確認の上流変更が基準へ混入した",
+    "既存認証とユーザー別保存を破るschema方針が必要になった",
+    "問題データ利用許諾が不明なまま実データ同梱が必要になった",
+    "音声modelのライセンスまたは対象CPUが配布方式を左右する",
+    "外部書込み、秘密情報、実環境deploy、高額API、破壊的migrationが必要になった"
+  ],
+  "completion_claim_allowed": false
+}

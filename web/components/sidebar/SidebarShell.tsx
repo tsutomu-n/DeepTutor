@@ -16,6 +16,7 @@ import {
   House,
   LayoutGrid,
   Library,
+  ListChecks,
   Lock,
   PanelLeftClose,
   PanelLeftOpen,
@@ -86,6 +87,12 @@ const PRIMARY_NAV: NavEntry[] = [
     label: "Learning Space",
     icon: LayoutGrid,
     tooltipKey: "Space tooltip",
+  },
+  {
+    href: "/tjm",
+    label: "TJM Exam Studio",
+    icon: ListChecks,
+    tooltipKey: "TJM tooltip",
   },
 ];
 

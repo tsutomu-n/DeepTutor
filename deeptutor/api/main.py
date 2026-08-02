@@ -361,6 +361,7 @@ from deeptutor.api.routers import (
     space_mcp,
     subagents,
     system,
+    tjm,
     unified_ws,
     voice,
 )
@@ -467,6 +468,7 @@ app.include_router(
 )
 app.include_router(tools_router.router, prefix="/api/v1/tools", tags=["tools"], dependencies=_auth)
 app.include_router(system.router, prefix="/api/v1/system", tags=["system"], dependencies=_auth)
+app.include_router(tjm.router, prefix="/api/v1/tjm", tags=["tjm"], dependencies=_auth)
 app.include_router(voice.router, prefix="/api/v1/voice", tags=["voice"], dependencies=_auth)
 app.include_router(
     plugins_api.router, prefix="/api/v1/plugins", tags=["plugins"], dependencies=_auth
