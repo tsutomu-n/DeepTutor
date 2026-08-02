@@ -1,8 +1,8 @@
 {
   "schema_version": "1.0",
-  "updated_at": "2026-08-02_22:45",
+  "updated_at": "2026-08-02_22:50",
   "timezone": "Asia/Tokyo",
-  "status": "in_progress",
+  "status": "completed",
   "current_checkpoint": "CP-12",
   "repository": {
     "path": "/home/tn/projects/DeepTutor",
@@ -343,6 +343,19 @@
     "licensed Takken question data and the sherpa model are not bundled",
     "TJM workspace detailed copy is English-first; only global navigation follows the existing en/zh catalog"
   ],
+  "publication": {
+    "feature_commit": "80339c862d11c9432ca9c20be7b8b6bff6c98536",
+    "remote_branch": "origin/tjm/implementation",
+    "pull_request": {
+      "number": 1,
+      "url": "https://github.com/tsutomu-n/DeepTutor/pull/1",
+      "state": "open",
+      "draft": true,
+      "base": "main",
+      "head": "tjm/implementation",
+      "merged": false
+    }
+  },
   "checkpoints": [
     {
       "id": "CP-04",
@@ -395,7 +408,7 @@
     {
       "id": "CP-12",
       "title": "commit、push、Draft PR",
-      "status": "in_progress",
+      "status": "completed",
       "depends_on": ["CP-11"]
     }
   ],
@@ -406,5 +419,5 @@
     "音声modelのライセンスまたは対象CPUが配布方式を左右する",
     "外部書込み、秘密情報、実環境deploy、高額API、破壊的migrationが必要になった"
   ],
-  "completion_claim_allowed": false
+  "completion_claim_allowed": true
 }

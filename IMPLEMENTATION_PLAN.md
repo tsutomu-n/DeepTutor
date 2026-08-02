@@ -1,15 +1,16 @@
 # TJM 実装計画
 
-更新: 2026-08-02_22:45 (Asia/Tokyo)
+更新: 2026-08-02_22:50 (Asia/Tokyo)
 
 ## 1. 状態
 
-- 計画状態: 実行中
-- 現在のチェックポイント: CP-12 GitHub反映
+- 計画状態: 完了
+- 現在のチェックポイント: CP-12 GitHub反映（完了）
 - 作業ブランチ: `tjm/implementation`
 - 基準: DeepTutor v1.5.8 / `44fa7a1552b88f9d8ce2c22259128a15ae2eb0c8`
 - リポジトリルート: `/home/tn/projects/DeepTutor`
-- 完了宣言: まだ行わない。CP-04〜CP-11は完了したが、commit、push、Draft PRが未完了である。
+- Draft PR: [#1 Add TJM exam learning platform](https://github.com/tsutomu-n/DeepTutor/pull/1)（`tjm/implementation` → `main`、Draft）
+- 完了宣言: CP-04〜CP-12の実装、検証、push、Draft PR作成は完了した。正当な宅建問題データの投入と実端末音声受入は配備側作業として残る。
 
 ## 2. 目的
 
@@ -219,7 +220,7 @@ Webは正式正解をローカル判定せず、practiceの確定応答または
 
 依存: CP-11
 
-状態: 実行中
+状態: 完了
 
 完了条件:
 
@@ -352,7 +353,15 @@ Webは正式正解をローカル判定せず、practiceの確定応答または
 | Docker smoke | production containerを起動してbackend `/`、frontend `/tjm`、healthを確認 | API応答、TJM HTTP 200、container healthy、TJM 24 routes、VAD 4 asset同梱。任意sherpa/edge extraは本体imageへ未同梱 |
 | 最終検索監査 | TODO/仮成功/dummy/LLM採点/秘密情報/正解開示と`git diff --check` | 完成扱いを妨げる仮実装・LLM採点経路・提出前正解開示を検出せず、差分空白検査成功 |
 
-## 16. 既存リスクと今回の扱い
+## 16. CP-12 証拠台帳
+
+| 項目 | コマンド/証拠 | 結果 |
+| --- | --- | --- |
+| 実装commit | `git commit -m "feat: add TJM exam learning platform"` | `80339c862d11c9432ca9c20be7b8b6bff6c98536` |
+| branch push | `git push -u origin tjm/implementation` | `origin/tjm/implementation`へtracking付きで成功 |
+| Draft PR | GitHub PR #1 | `tjm/implementation`から`main`へのDraftとして作成。merge未実施 |
+
+## 17. 既存リスクと今回の扱い
 
 - npm auditは10件から5件へ低減した。Nextを16.2.12へ更新して認証proxy回避の既知範囲を外した。残るhigh 3件はNext 16.2.12内のPostCSS 8.4.31とsharp 0.34.5、moderate 2件はExcelJS 4.4.0内のuuid 8.3.2とその親packageである。npm提示の自動修正はNext 9.3.3またはExcelJS 3.4.0への破壊的downgradeなので適用しない。
 - CP-04時点ではPython lockfileがなく範囲依存の最新値を解決した。現在は`uv.lock`を追加したが、Dockerのrequirements経路はまだ同一lockを消費しない。
@@ -365,7 +374,7 @@ Webは正式正解をローカル判定せず、practiceの確定応答または
 - `edge-tts`はMicrosoft Edgeのonline音声serviceを使い、packageはLGPLv3である。可用性・規約・network依存があるため、既存TTS providerを残し自動fallbackにしない。
 - VAD packageは自己配信できるが、実microphone可否・permission・AudioWorkletはbrowser/device依存である。Chromium fake microphoneで実経路を検証し、失敗時は画面回答へ戻れるようにした。実端末・主要ブラウザ全組合せの認証は配備側の受入試験として残る。
 
-## 17. 重大な停止条件
+## 18. 重大な停止条件
 
 - 指定commitと実際の正本が一致しなくなり、未確認の上流変更が混入した。
 - 既存認証/ユーザー分離とTJM保存要件が両立せず、schema/auth方針の変更が必要になった。
