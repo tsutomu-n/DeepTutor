@@ -95,10 +95,13 @@ export interface TjmQuestionVersion {
   hints: string[]
   source: Record<string, unknown>
   status: TjmQuestionStatus
+  content_revision: number
   created_by: string
   created_at: string
   updated_at: string
   reviewed_by: string | null
+  reviewed_revision: number | null
+  review_binding_state: 'current' | 'stale' | 'legacy_unverified' | 'unreviewed'
   reviewed_at: string | null
   review_note: string | null
 }

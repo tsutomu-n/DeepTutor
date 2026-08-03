@@ -128,6 +128,59 @@ def test_admin_import_review_publish_and_retire_workflow(admin_client: TestClien
     assert retired.json()["status"] == "retired"
 
 
+def test_admin_must_rereview_current_revision_after_edit(admin_client: TestClient) -> None:
+    assert admin_client.post("/api/v1/tjm/exams", json=_exam_payload()).status_code == 201
+    imported = admin_client.post(
+        "/api/v1/tjm/imports",
+        data={"import_format": "json"},
+        files={
+            "file": (
+                "questions.json",
+                json.dumps(_question_payload()).encode(),
+                "application/json",
+            )
+        },
+    )
+    assert imported.status_code == 201
+    version_id = admin_client.get("/api/v1/tjm/review/questions?status=draft").json()["questions"][
+        0
+    ]["id"]
+
+    reviewed = admin_client.post(
+        f"/api/v1/tjm/review/questions/{version_id}/review",
+        json={"note": "reviewed revision one"},
+    )
+    assert reviewed.status_code == 200
+    assert reviewed.json()["content_revision"] == 1
+    assert reviewed.json()["reviewed_revision"] == 1
+
+    edited_payload = {
+        **_question_payload()[0],
+        "stem": "Edited after review.",
+        "correct_option_key": "1",
+    }
+    edited = admin_client.patch(f"/api/v1/tjm/review/questions/{version_id}", json=edited_payload)
+    assert edited.status_code == 200
+    assert edited.json()["content_revision"] == 2
+    assert edited.json()["reviewed_by"] is None
+    assert edited.json()["reviewed_revision"] is None
+    assert edited.json()["review_binding_state"] == "stale"
+
+    stale_publish = admin_client.post(f"/api/v1/tjm/review/questions/{version_id}/publish")
+    assert stale_publish.status_code == 409
+    assert "current revision must be reviewed" in stale_publish.json()["detail"]
+
+    rereviewed = admin_client.post(
+        f"/api/v1/tjm/review/questions/{version_id}/review",
+        json={"note": "reviewed revision two"},
+    )
+    assert rereviewed.status_code == 200
+    assert rereviewed.json()["reviewed_revision"] == 2
+    published = admin_client.post(f"/api/v1/tjm/review/questions/{version_id}/publish")
+    assert published.status_code == 200
+    assert published.json()["correct_option_key"] == "1"
+
+
 def test_invalid_import_returns_422_with_auditable_batch(admin_client: TestClient) -> None:
     assert admin_client.post("/api/v1/tjm/exams", json=_exam_payload()).status_code == 201
     invalid = _question_payload()

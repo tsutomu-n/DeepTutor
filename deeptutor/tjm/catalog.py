@@ -168,6 +168,16 @@ class CatalogService:
                     FROM question_versions qv
                     JOIN questions q ON q.id = qv.question_id
                     WHERE q.exam_id = ? AND qv.status = 'published'
+                      AND EXISTS (
+                          SELECT 1
+                          FROM review_bindings AS binding
+                          JOIN review_events AS event
+                            ON event.id = binding.review_event_id
+                          WHERE binding.question_version_id = qv.id
+                            AND binding.content_revision = qv.content_revision
+                            AND binding.content_hash = qv.content_hash
+                            AND event.action = 'reviewed'
+                      )
                     GROUP BY qv.area
                     """,
                     (exam_id.strip(),),
@@ -212,6 +222,15 @@ class CatalogService:
                 FROM question_versions qv
                 JOIN questions q ON q.id = qv.question_id
                 WHERE q.exam_id = ? AND qv.status = 'published'
+                  AND EXISTS (
+                      SELECT 1
+                      FROM review_bindings AS binding
+                      JOIN review_events AS event ON event.id = binding.review_event_id
+                      WHERE binding.question_version_id = qv.id
+                        AND binding.content_revision = qv.content_revision
+                        AND binding.content_hash = qv.content_hash
+                        AND event.action = 'reviewed'
+                  )
                 ORDER BY qv.area, q.stable_id, qv.version
                 """,
                 (exam_id.strip(),),
@@ -295,8 +314,8 @@ class CatalogService:
             INSERT INTO question_versions (
                 id, question_id, version, stem, options_json, correct_option_key,
                 area, explanation, hints_json, source_json, content_hash, status,
-                created_by, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?)
+                created_by, created_at, updated_at, updated_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?)
             """,
             (
                 version_id,
@@ -313,6 +332,7 @@ class CatalogService:
                 actor,
                 now,
                 now,
+                actor,
             ),
         )
         return version_id
@@ -321,13 +341,13 @@ class CatalogService:
         self, version_id: str, draft: QuestionVersionDraft, *, actor_id: str
     ) -> dict[str, Any]:
         normalized = draft.normalized()
-        _require_actor(actor_id)
+        actor = _require_actor(actor_id)
         digest = _content_hash(normalized)
         with self.store.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
                 """
-                SELECT qv.status, q.exam_id, q.stable_id
+                SELECT qv.status, qv.content_hash, q.exam_id, q.stable_id
                 FROM question_versions qv JOIN questions q ON q.id = qv.question_id
                 WHERE qv.id = ?
                 """,
@@ -342,48 +362,94 @@ class CatalogService:
                 normalized.stable_id,
             ):
                 raise DomainValidationError("exam_id and stable_id cannot be changed")
-            try:
-                conn.execute(
-                    """
+            if row["content_hash"] != digest:
+                try:
+                    conn.execute(
+                        """
                     UPDATE question_versions SET
                         stem = ?, options_json = ?, correct_option_key = ?, area = ?,
                         explanation = ?, hints_json = ?, source_json = ?, content_hash = ?,
-                        updated_at = ?
+                        content_revision = content_revision + 1, updated_at = ?, updated_by = ?
                     WHERE id = ?
                     """,
-                    (
-                        normalized.stem,
-                        _json(
-                            [{"key": item.key, "text": item.text} for item in normalized.choices]
+                        (
+                            normalized.stem,
+                            _json(
+                                [
+                                    {"key": item.key, "text": item.text}
+                                    for item in normalized.choices
+                                ]
+                            ),
+                            normalized.correct_option_key,
+                            normalized.area,
+                            normalized.explanation,
+                            _json(list(normalized.hints)),
+                            _json(dict(normalized.source)),
+                            digest,
+                            _now(),
+                            actor,
+                            version_id,
                         ),
-                        normalized.correct_option_key,
-                        normalized.area,
-                        normalized.explanation,
-                        _json(list(normalized.hints)),
-                        _json(dict(normalized.source)),
-                        digest,
-                        _now(),
-                        version_id,
-                    ),
-                )
-            except sqlite3.IntegrityError as exc:
-                raise DuplicateRecordError("identical question content already exists") from exc
+                    )
+                except sqlite3.IntegrityError as exc:
+                    raise DuplicateRecordError("identical question content already exists") from exc
         return self.get_question_version(version_id)
 
     def review_question_version(
         self, version_id: str, *, actor_id: str, note: str = ""
     ) -> dict[str, Any]:
         actor = _require_actor(actor_id)
+        now = _now()
         with self.store.connect() as conn:
-            status = self._version_status(conn, version_id)
-            if status != "draft":
-                raise InvalidTransitionError("only draft versions can be reviewed")
-            conn.execute(
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                SELECT
+                    qv.status,
+                    qv.content_revision,
+                    qv.content_hash,
+                    EXISTS (
+                        SELECT 1 FROM review_events
+                        WHERE question_version_id = qv.id AND action = 'reviewed'
+                    ) AS has_legacy_review,
+                    EXISTS (
+                        SELECT 1
+                        FROM review_bindings AS binding
+                        JOIN review_events AS event ON event.id = binding.review_event_id
+                        WHERE binding.question_version_id = qv.id
+                          AND binding.content_revision = qv.content_revision
+                          AND binding.content_hash = qv.content_hash
+                          AND event.action = 'reviewed'
+                    ) AS has_current_review
+                FROM question_versions AS qv WHERE qv.id = ?
+                """,
+                (version_id,),
+            ).fetchone()
+            if row is None:
+                raise DomainValidationError(f"unknown question version: {version_id}")
+            is_legacy_publication = (
+                row["status"] == "published"
+                and row["has_legacy_review"]
+                and not row["has_current_review"]
+            )
+            if row["status"] != "draft" and not is_legacy_publication:
+                raise InvalidTransitionError(
+                    "only draft or unverified legacy published versions can be reviewed"
+                )
+            cursor = conn.execute(
                 """
                 INSERT INTO review_events (question_version_id, action, actor_id, note, created_at)
                 VALUES (?, 'reviewed', ?, ?, ?)
                 """,
-                (version_id, actor, note.strip(), _now()),
+                (version_id, actor, note.strip(), now),
+            )
+            conn.execute(
+                """
+                INSERT INTO review_bindings (
+                    review_event_id, question_version_id, content_revision, content_hash
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (cursor.lastrowid, version_id, row["content_revision"], row["content_hash"]),
             )
         return self.get_question_version(version_id)
 
@@ -435,7 +501,11 @@ class CatalogService:
         with self.store.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
-                "SELECT question_id, status FROM question_versions WHERE id = ?", (version_id,)
+                """
+                SELECT question_id, status, content_revision, content_hash
+                FROM question_versions WHERE id = ?
+                """,
+                (version_id,),
             ).fetchone()
             if row is None:
                 raise DomainValidationError(f"unknown question version: {version_id}")
@@ -443,13 +513,19 @@ class CatalogService:
                 raise InvalidTransitionError("only draft versions can be published")
             reviewed = conn.execute(
                 """
-                SELECT 1 FROM review_events
-                WHERE question_version_id = ? AND action = 'reviewed' LIMIT 1
+                SELECT 1
+                FROM review_bindings AS binding
+                JOIN review_events AS event ON event.id = binding.review_event_id
+                WHERE binding.question_version_id = ?
+                  AND binding.content_revision = ?
+                  AND binding.content_hash = ?
+                  AND event.action = 'reviewed'
+                LIMIT 1
                 """,
-                (version_id,),
+                (version_id, row["content_revision"], row["content_hash"]),
             ).fetchone()
             if reviewed is None:
-                raise InvalidTransitionError("question version must be reviewed before publication")
+                raise InvalidTransitionError("current revision must be reviewed before publication")
 
             current = conn.execute(
                 """
@@ -499,17 +575,34 @@ class CatalogService:
                 """,
                 (version_id,),
             ).fetchone()
+            if row is None:
+                raise DomainValidationError(f"unknown question version: {version_id}")
             review = conn.execute(
                 """
-                SELECT actor_id, note, created_at
-                FROM review_events
-                WHERE question_version_id = ? AND action = 'reviewed'
-                ORDER BY id DESC LIMIT 1
+                SELECT event.actor_id, event.note, event.created_at, binding.content_revision
+                FROM review_bindings AS binding
+                JOIN review_events AS event ON event.id = binding.review_event_id
+                WHERE binding.question_version_id = ?
+                  AND binding.content_revision = ?
+                  AND binding.content_hash = ?
+                  AND event.action = 'reviewed'
+                ORDER BY event.id DESC LIMIT 1
                 """,
-                (version_id,),
+                (version_id, row["content_revision"], row["content_hash"]),
             ).fetchone()
-        if row is None:
-            raise DomainValidationError(f"unknown question version: {version_id}")
+            review_summary = conn.execute(
+                """
+                SELECT
+                    EXISTS(
+                        SELECT 1 FROM review_events
+                        WHERE question_version_id = ? AND action = 'reviewed'
+                    ) AS has_review,
+                    EXISTS(
+                        SELECT 1 FROM review_bindings WHERE question_version_id = ?
+                    ) AS has_binding
+                """,
+                (version_id, version_id),
+            ).fetchone()
         result = dict(row)
         result["choices"] = json.loads(result.pop("options_json"))
         result["hints"] = json.loads(result.pop("hints_json"))
@@ -517,6 +610,17 @@ class CatalogService:
         result["reviewed_by"] = str(review["actor_id"]) if review is not None else None
         result["review_note"] = str(review["note"]) if review is not None else None
         result["reviewed_at"] = str(review["created_at"]) if review is not None else None
+        result["reviewed_revision"] = (
+            int(review["content_revision"]) if review is not None else None
+        )
+        if review is not None:
+            result["review_binding_state"] = "current"
+        elif review_summary is not None and review_summary["has_review"]:
+            result["review_binding_state"] = (
+                "stale" if review_summary["has_binding"] else "legacy_unverified"
+            )
+        else:
+            result["review_binding_state"] = "unreviewed"
         return result
 
     def list_question_versions(self, *, status: str) -> list[dict[str, Any]]:

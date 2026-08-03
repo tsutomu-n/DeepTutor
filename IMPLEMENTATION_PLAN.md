@@ -1,16 +1,28 @@
 # TJM 実装計画
 
-更新: 2026-08-02_22:50 (Asia/Tokyo)
+更新: 2026-08-03_12:45 (Asia/Tokyo)
 
 ## 1. 状態
 
-- 計画状態: 完了
-- 現在のチェックポイント: CP-12 GitHub反映（完了）
+- 計画状態: 未完了（追加監査により完成判定を撤回し、修復中）
+- 現在のチェックポイント: CP-13 中核整合性の修復（進行中）
 - 作業ブランチ: `tjm/implementation`
 - 基準: DeepTutor v1.5.8 / `44fa7a1552b88f9d8ce2c22259128a15ae2eb0c8`
 - リポジトリルート: `/home/tn/projects/DeepTutor`
 - Draft PR: [#1 Add TJM exam learning platform](https://github.com/tsutomu-n/DeepTutor/pull/1)（`tjm/implementation` → `main`、Draft）
-- 完了宣言: CP-04〜CP-12の実装、検証、push、Draft PR作成は完了した。正当な宅建問題データの投入と実端末音声受入は配備側作業として残る。
+- 過去の判定: 2026-08-02にCP-04〜CP-12の実装・検証・push・Draft PR作成をもって完成と判定した。
+- 判定の撤回: 2026-08-03の追加監査で、レビュー後編集、サーバー時間、期限確定、復習キュー、廃止版、配布物、永続化の契約不備を再現したため、製品完成判定を撤回した。CP-04〜CP-12の作業履歴は監査証跡として保持する。
+- GitHub境界: PR #1はDraftのまま維持する。`main`へのmerge、Ready for review、release、publish、deploymentは行わない。
+- 実行状態の正本: 本書と`IMPLEMENTATION_PLAN.ai.json`。`.codex/SP_STATE.md`は実行環境の書込制約で旧CP-11のまま更新できないため、現在状態の根拠に使わない。
+
+### 1.1 完成段階
+
+| 段階 | 完成条件 | 現状 |
+| --- | --- | --- |
+| A. 中核実装 | 正式問題、採点、回答、期限、復習、廃止版、合否、利用者分離の契約と自動テストが成立 | 未完了 |
+| B. 配布可能 | clean build/wheel install、Docker再作成、永続化、backup/restore、CIが再現可能 | 未完了 |
+| C. 製品受入 | 日本語UI、操作型E2E、音声自動検証、実端末、権利確認済み宅建問題での完走 | 自動化可能部分は未完了、実端末・実データは外部待ち |
+| D. ユーザー判断 | Draft PRで証拠を確認し、merge・公開・配備をユーザーが判断 | 未実施 |
 
 ## 2. 目的
 
@@ -229,6 +241,62 @@ Webは正式正解をローカル判定せず、practiceの確定応答または
 - 変更、検証結果、既存/残存リスクを記したDraft PRを作る。
 - `main`へmergeしない。
 
+### CP-13 中核整合性の修復
+
+依存: CP-12後の追加監査
+
+状態: 進行中
+
+完了条件:
+
+- 公開版を表す`version`とdraft編集世代`content_revision`を分離し、レビューを不変revisionへ結び付け、publish transaction内で現在revisionと再照合する。
+- 初回表示、初回・最終回答、提出をサーバーUTC時刻で保存し、正式時間とclient診断値を分離する。
+- 回答、音声確定、提出、復習完了の再送をidempotency keyとDB一意制約で二重適用しない。
+- 期限到来時の現在回答をGET・書込み・提出・履歴の各経路から冪等に自動確定・採点する。
+- 復習attemptは開始時のqueue行IDだけをsnapshotし、後発理由や他attemptを完了させない。
+- 廃止理由を`superseded`と`invalid_content`に分け、履歴保持、新規出題、得点・分析、pending復習の扱いをテストで固定する。
+- `official_passing_score`と利用者別`practice_target_score`を分け、未確定の公式合否を推測しない。
+- 別利用者のattempt/履歴/復習操作、非adminの問題管理、提出前answer key漏洩をnegative testで拒否する。
+
+### CP-14 配布と永続化
+
+依存: CP-13
+
+状態: 未着手
+
+完了条件:
+
+- source Docker経路でclean build、`/tjm` smoke、container再作成後のcatalogとadmin/一般ユーザー履歴保持を実測する。
+- GHCR composeとrelease workflowをfork所有imageまたはrepository動的名にし、`data` root全体を永続化する。実publishは行わない。
+- SQLiteの整合したoffline backup/restore手順を用意し、復元後のcatalogと履歴一致を検証する。
+- `prepare_web_package`からwheel build、clean install、`deeptutor start`、`/tjm` smokeまでを再現する。
+- PR用CIにTJM対象test、migration、Web lint/type/build、操作型E2E、Docker smokeを組み込む。
+- 依存脆弱性はadvisory、導入差分、production到達性、修正可否、期限付きリスク受容で判定する。`npm audit fix --force`は行わない。
+
+### CP-15 製品受入
+
+依存: CP-13、CP-14
+
+状態: 未着手
+
+完了条件:
+
+- TJM利用導線を日本語化し、固定文言のi18n lint全体無効化を解消する。
+- 合成日本語問題50問の取り込み、レビュー、公開、本番形式完走、復習、永続化を自動検証する。合成問題を実問題と表示しない。
+- VAD、音声候補、取消、確定、二重送信、TTS中mic無効化、障害後の画面回答を再実行可能な自動テストにする。
+- Pixel 9a等の対象実端末で10問、権利確認済み宅建問題50問以上の受入は、必要な外部操作・データが提供された時点で実施する。
+
+### CP-16 ユーザーリリース判断
+
+依存: CP-15
+
+状態: 未着手
+
+完了条件:
+
+- 変更、検証証拠、未確認の外部受入、依存リスクをDraft PR #1に同期する。
+- PRはDraftのままユーザーへ引き渡す。merge、Ready化、release、publish、deploymentはユーザーの別判断とする。
+
 ## 8. CP-04 証拠台帳
 
 | 項目 | コマンド/証拠 | 結果 |
@@ -361,9 +429,27 @@ Webは正式正解をローカル判定せず、practiceの確定応答または
 | branch push | `git push -u origin tjm/implementation` | `origin/tjm/implementation`へtracking付きで成功 |
 | Draft PR | GitHub PR #1 | `tjm/implementation`から`main`へのDraftとして作成。merge未実施 |
 
+## 16.1 CP-13 証拠台帳（進行中）
+
+| 項目 | コマンド/証拠 | 結果 |
+| --- | --- | --- |
+| 完成判定撤回 | 本書と`IMPLEMENTATION_PLAN.ai.json` | CP-04〜CP-12の履歴を保持し、状態を未完了、CP-13、`completion_claim_allowed=false`へ同期 |
+| Catalog migration v3 | legacy v1/v2 DBから`CatalogStore`を再初期化 | current内容をrevision 1へbackfill、旧review eventを保持、review bindingは推測作成せず0件 |
+| revision監査 | `question_version_revisions`、`review_bindings`、SQLite trigger | draft編集ごとにimmutable snapshotを作成し、reviewを`question_version_id + content_revision + content_hash`へbinding |
+| stale review | review後に本文・正解を変更してpublish | `current revision must be reviewed`で拒否し、再review後だけpublish成功 |
+| hash対象の回帰 | 選択肢順、分野、解説、ヒント、出典を各1項目だけ変更 | 5ケースすべてrevision増分、review失効、publish拒否 |
+| transaction競合 | edit transaction中に別threadでpublish | edit commit後のcurrent revisionを再照合し、旧reviewによるpublishを拒否 |
+| legacy公開版 | v2で公開済みの問題をv3へmigration | current bindingを推測せず出題・試験有効化から除外し、人間の再review後だけ復帰。Admin UIにも再review対象として表示 |
+| legacy帰属 | v2の`created_at`と`updated_at`が異なるcurrent内容 | 実編集者を復元できないため`legacy-unknown`、記録時刻を`updated_at`として保存し、原作者への誤帰属を回避 |
+| 監査・identity不変性 | review event、question、question versionへの直接SQL更新/削除 | legacyを含むreview eventの更新・削除と、review済み問題のexam/stable identity差替えをSQLite triggerで拒否 |
+| 対象検証 | `pytest -q tests/tjm/test_storage.py tests/tjm/test_domain.py tests/api/test_tjm_router.py` | 42 passed、211 warnings。rejected版、legacy公開版、全hash対象、監査・identity不変条件を含む |
+| 関連検証 | `pytest -q tests/tjm tests/api/test_tjm_router.py` | 66 passed、211 warnings |
+| Web検証 | `npm run test:node`; `npm exec -- tsc --noEmit`; 対象`eslint` | 377 passed、型検査・lint成功。legacy公開版だけを再review対象へ含め、編集・reject・publishを許可しないaction matrixをbehavior testで固定 |
+| 静的検査 | 対象`ruff check`、`ruff format --check`、JSON parse、`git diff --check` | 成功 |
+
 ## 17. 既存リスクと今回の扱い
 
-- npm auditは10件から5件へ低減した。Nextを16.2.12へ更新して認証proxy回避の既知範囲を外した。残るhigh 3件はNext 16.2.12内のPostCSS 8.4.31とsharp 0.34.5、moderate 2件はExcelJS 4.4.0内のuuid 8.3.2とその親packageである。npm提示の自動修正はNext 9.3.3またはExcelJS 3.4.0への破壊的downgradeなので適用しない。
+- npm auditは現在high 3件、moderate 2件、critical 0件である。自動修正が破壊的downgradeになるという過去の記録は今回の再確認で裏付け切れなかったため撤回する。advisoryごとの導入差分、production到達性、修正可否はCP-14で確定する。
 - CP-04時点ではPython lockfileがなく範囲依存の最新値を解決した。現在は`uv.lock`を追加したが、Dockerのrequirements経路はまだ同一lockを消費しない。
 - Dockerも `pip install -r requirements.txt` で当日最新を解決し、Python 3.11環境ではローカルPython 3.12環境と一部の解決版が異なる。production build成功は確認したが、将来の同一解決を保証する証拠ではない。
 - mypyの現行コマンドは設定と最新stubが不整合である。TJM追加コードは局所型検査を通し、全体契約修復は独立変更として判断する。
@@ -374,12 +460,35 @@ Webは正式正解をローカル判定せず、practiceの確定応答または
 - `edge-tts`はMicrosoft Edgeのonline音声serviceを使い、packageはLGPLv3である。可用性・規約・network依存があるため、既存TTS providerを残し自動fallbackにしない。
 - VAD packageは自己配信できるが、実microphone可否・permission・AudioWorkletはbrowser/device依存である。Chromium fake microphoneで実経路を検証し、失敗時は画面回答へ戻れるようにした。実端末・主要ブラウザ全組合せの認証は配備側の受入試験として残る。
 
-## 18. 重大な停止条件
+## 18. 追加監査の再現証拠
 
-- 指定commitと実際の正本が一致しなくなり、未確認の上流変更が混入した。
-- 既存認証/ユーザー分離とTJM保存要件が両立せず、schema/auth方針の変更が必要になった。
-- 正式問題データの利用許諾や出典が不明なまま、実データ同梱が必要になった。
-- ローカル音声modelの配布ライセンス、サイズ、対応CPUが配布形態を決める重大分岐になった。
-- 外部書込み、秘密情報、実環境deploy、高額API利用、破壊的migrationが必要になった。
+2026-08-03の追加監査は、cleanな`28747af3590065dc3a47f6abbacc1b84f6cc8037`に対して実施した。既存の対象テストは`53 passed`だったが、次を一時SQLite DBで再現した。
+
+- review後に正解AからBへ編集しても、旧reviewのままBをpublishできる。
+- `elapsed_ms=0`と未来client時刻を受理し、analytics平均が`0.0`になる。
+- 期限後のGETとhistoryが`in_progress`、`submitted_at=null`のままになる。
+- 復習開始後に追加されたqueue理由が、古いreview attempt提出で完了する。
+- retired版がpending queueと新規review attemptに残る。
+- GHCR composeは上流imageと部分mountを使い、TJM catalogと一般ユーザー履歴を永続化しない。
+- 手元のwheelはTJM Python codeを含むが、packaged Next `server.js`と静的資産を含まない。
+- PR #1はDraft/Openだが、GitHub上のworkflow run、check、reviewはいずれも0件である。
+
+## 19. 修正継続対象と停止境界
+
+次は停止条件ではない。失敗をREDとして固定し、原因を修正して再試験する。
+
+- wheelのWeb資産欠落、clean install失敗、Docker再作成後のデータ消失
+- 単体/API/E2E/CI/build/lint/型検査の失敗、新規ベースライン回帰
+- 期限、レビュー、復習、日本語UI、自動音声検証の不備
+- 局所修正または根拠付きリスク受容が可能な依存監査結果
+
+次の境界でのみ作業を停止し、必要最小限の判断または外部操作を依頼する。
+
+- 既存実データを保つ非破壊migrationを設計できず、backupと復旧経路を確保しても安全に進められない。
+- GitHub Actions設定変更、GHCR公開、本番配備、mainへのmerge、Ready化など、repository所有者の外部操作が必要になる。
+- API key、認証情報、秘密情報、高額または有償の外部APIが必要になる。
+- 権利確認済み宅建問題、正式出典、年度別合格点の根拠をユーザーから受け取る必要がある。
+- Pixel 9a等の対象実端末で、マイク、スピーカー、イヤホン、実browserを人間が操作する必要がある。
+- 目的、基盤、既存ユーザーデータの前提を変える重大な設計分岐が発生し、実コードから合理的に決められない。
 
 上記以外の局所・可逆な実装判断は、テストと本計画を更新しながら自律的に進める。

@@ -1,9 +1,13 @@
 {
   "schema_version": "1.0",
-  "updated_at": "2026-08-02_22:50",
+  "updated_at": "2026-08-03_12:45",
   "timezone": "Asia/Tokyo",
-  "status": "completed",
-  "current_checkpoint": "CP-12",
+  "status": "in_progress",
+  "current_checkpoint": "CP-13",
+  "execution_state_source": {
+    "authoritative": ["IMPLEMENTATION_PLAN.md", "IMPLEMENTATION_PLAN.ai.json"],
+    "sp_state": "stale_cp11_read_only_in_current_execution_environment"
+  },
   "repository": {
     "path": "/home/tn/projects/DeepTutor",
     "github": "tsutomu-n/DeepTutor",
@@ -18,7 +22,10 @@
     "初期の問題取り込み、レビュー、公開権限は既存adminに限定する",
     "実宅建問題本文は正当なデータ提供まで同梱しない",
     "正式問題と回答履歴は既存AI Quiz保存領域と分離する",
-    "npm基準が安定する限りBun移行はTJM本体より後に評価する"
+    "npm基準が安定する限りBun移行はTJM本体より後に評価する",
+    "既存pass_scoreは公式値へ推測移行せず利用者のpractice targetとして保全する",
+    "TJM日本語化とDeepTutor全体の日本語化は分離し、今回の製品受入はTJM導線を対象にする",
+    "source-build Dockerを配備の正本とし、GHCR publishと本番配備は行わない"
   ],
   "invariants": [
     "LLMは正式正解、採点、公開、回答履歴を変更しない",
@@ -26,7 +33,10 @@
     "試験提出前の応答は正解、解説、採点結果を含まない",
     "音声認識文字列は確認後だけ正式回答になる",
     "音声またはAI障害時も画面操作を継続できる",
-    "試験の問題数、分野名、制限時間をPythonまたはTypeScript定数へ固定しない"
+    "試験の問題数、分野名、制限時間をPythonまたはTypeScript定数へ固定しない",
+    "レビュー済みrevisionと公開時のcurrent revisionがtransaction内で一致しなければ公開しない",
+    "正式回答時間はサーバー時刻を正本としclient時間は診断値に限定する",
+    "同一idempotency keyの再送で回答イベント、採点、復習完了を二重適用しない"
   ],
   "planned_storage": {
     "engine": "SQLite",
@@ -42,7 +52,9 @@
           "exam_definitions",
           "questions",
           "question_versions",
+          "question_version_revisions",
           "review_events",
+          "review_bindings",
           "import_batches"
         ]
       },
@@ -55,7 +67,9 @@
           "attempts",
           "attempt_items",
           "answer_events",
-          "review_queue"
+          "review_queue",
+          "review_attempt_queue_links",
+          "learning_commands"
         ]
       }
     ]
@@ -336,8 +350,75 @@
       }
     }
   },
+  "reassessment": {
+    "audited_at": "2026-08-03_12:12",
+    "audited_head": "28747af3590065dc3a47f6abbacc1b84f6cc8037",
+    "previous_completion_claim": {
+      "claimed_at": "2026-08-02_22:50",
+      "status": "withdrawn",
+      "reason": "追加監査で正式問題、時間、期限、復習、廃止版、配布、永続化の未試験契約違反を再現した"
+    },
+    "confirmed_failures": [
+      "review後に内容を変更しても旧reviewでpublishできる",
+      "client elapsed 0と未来時刻が正式analyticsへ反映される",
+      "期限後GETとhistoryがin_progressのままになる",
+      "review開始後の後発queue理由が古いattemptで完了する",
+      "retired版が新規review対象に残る",
+      "GHCR composeがTJM catalogと一般ユーザー履歴を永続化しない",
+      "手元のwheelがpackaged Next assetsを含まない",
+      "Draft PRにworkflow run、check、reviewがない"
+    ],
+    "targeted_tests": {
+      "status": "passed_but_incomplete",
+      "passed": 53
+    },
+    "remediation_progress": {
+      "catalog_revision_review": {
+        "status": "completed",
+        "catalog_schema_version": 3,
+        "tables_added": ["question_version_revisions", "review_bindings"],
+        "legacy_policy": "preserve immutable review events, exclude unbound legacy publications from selection, and require human re-review instead of inferring a binding",
+        "legacy_attribution": "use legacy-unknown and the last updated_at when v2 cannot prove the editor",
+        "identity_policy": "question and question-version identity plus all review events are immutable at the database layer",
+        "admin_remediation_ui": "published legacy_unverified rows are listed for re-review without edit, reject, or republish controls",
+        "content_hash_regressions": ["choice_order", "area", "explanation", "hints", "source"],
+        "transactional_publish_recheck": "passed",
+        "targeted_tests": {"passed": 42, "warnings": 211},
+        "related_tjm_api_tests": {"passed": 66, "warnings": 211},
+        "web_node_tests": {"passed": 377, "legacy_admin_behavior_tests": 3},
+        "web_typecheck_and_targeted_lint": "passed",
+        "ruff": "passed"
+      }
+    }
+  },
+  "completion_stages": [
+    {
+      "id": "A",
+      "name": "core_implementation",
+      "status": "in_progress",
+      "requires": ["catalog_integrity", "server_timing", "idempotency", "expiry", "review_queue", "retirement_policy", "score_results", "authorization"]
+    },
+    {
+      "id": "B",
+      "name": "distributable",
+      "status": "pending",
+      "requires": ["clean_build", "wheel_install_smoke", "docker_recreate_persistence", "backup_restore", "ci"]
+    },
+    {
+      "id": "C",
+      "name": "product_acceptance",
+      "status": "pending_external_parts",
+      "requires": ["tjm_japanese_ui", "behavioral_e2e", "voice_automation", "target_device_acceptance", "licensed_takken_acceptance"]
+    },
+    {
+      "id": "D",
+      "name": "user_release_decision",
+      "status": "pending",
+      "requires": ["draft_pr_evidence", "user_decision"]
+    }
+  ],
   "residual_risks": [
-    "npm audit remains at 5 transitive findings; npm's automatic fix proposes destructive downgrades",
+    "npm audit remains at high 3 and moderate 2; advisory reachability and fixes require CP-14 evidence",
     "Docker requirements installation does not consume uv.lock",
     "full mypy remains blocked by the baseline Python 3.11 and NumPy stub mismatch",
     "licensed Takken question data and the sherpa model are not bundled",
@@ -410,14 +491,46 @@
       "title": "commit、push、Draft PR",
       "status": "completed",
       "depends_on": ["CP-11"]
+    },
+    {
+      "id": "CP-13",
+      "title": "中核整合性の修復",
+      "status": "in_progress",
+      "depends_on": ["CP-12"]
+    },
+    {
+      "id": "CP-14",
+      "title": "配布と永続化",
+      "status": "pending",
+      "depends_on": ["CP-13"]
+    },
+    {
+      "id": "CP-15",
+      "title": "製品受入",
+      "status": "pending",
+      "depends_on": ["CP-13", "CP-14"]
+    },
+    {
+      "id": "CP-16",
+      "title": "ユーザーリリース判断",
+      "status": "pending",
+      "depends_on": ["CP-15"]
     }
   ],
-  "stop_conditions": [
-    "未確認の上流変更が基準へ混入した",
-    "既存認証とユーザー別保存を破るschema方針が必要になった",
-    "問題データ利用許諾が不明なまま実データ同梱が必要になった",
-    "音声modelのライセンスまたは対象CPUが配布方式を左右する",
-    "外部書込み、秘密情報、実環境deploy、高額API、破壊的migrationが必要になった"
+  "continue_on_failures": [
+    "unit_api_e2e_ci_build_lint_type_failure",
+    "wheel_missing_web_assets_or_clean_install_failure",
+    "docker_recreate_persistence_failure",
+    "catalog_timing_expiry_review_ui_voice_automation_defect",
+    "dependency_issue_with_local_fix_or_evidence_based_risk_acceptance"
   ],
-  "completion_claim_allowed": true
+  "stop_conditions": [
+    "non_destructive_migration_cannot_preserve_existing_data_even_with_backup_and_recovery",
+    "repository_owner_action_is_required_for_actions_ghcr_deploy_merge_or_ready_state",
+    "api_key_secret_paid_external_api_or_production_credential_is_required",
+    "licensed_takken_content_official_source_or_yearly_score_evidence_is_required",
+    "human_operation_on_target_device_and_real_browser_is_required",
+    "major_goal_architecture_or_existing_user_data_assumption_cannot_be_resolved_from_repository_evidence"
+  ],
+  "completion_claim_allowed": false
 }

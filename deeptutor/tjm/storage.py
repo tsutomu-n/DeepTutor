@@ -219,6 +219,237 @@ END;
 """
 
 
+_CATALOG_V3 = """
+ALTER TABLE question_versions
+    ADD COLUMN content_revision INTEGER NOT NULL DEFAULT 1 CHECK (content_revision > 0);
+ALTER TABLE question_versions
+    ADD COLUMN updated_by TEXT NOT NULL DEFAULT '';
+UPDATE question_versions
+SET updated_by = CASE
+    WHEN updated_at = created_at THEN created_by
+    ELSE 'legacy-unknown'
+END
+WHERE updated_by = '';
+
+CREATE TABLE question_version_revisions (
+    question_version_id TEXT NOT NULL REFERENCES question_versions(id),
+    content_revision INTEGER NOT NULL CHECK (content_revision > 0),
+    stem TEXT NOT NULL CHECK (length(trim(stem)) > 0),
+    options_json TEXT NOT NULL,
+    correct_option_key TEXT NOT NULL CHECK (length(trim(correct_option_key)) > 0),
+    area TEXT NOT NULL CHECK (length(trim(area)) > 0),
+    explanation TEXT NOT NULL DEFAULT '',
+    hints_json TEXT NOT NULL DEFAULT '[]',
+    source_json TEXT NOT NULL DEFAULT '{}',
+    content_hash TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (question_version_id, content_revision)
+);
+
+INSERT INTO question_version_revisions (
+    question_version_id, content_revision, stem, options_json, correct_option_key,
+    area, explanation, hints_json, source_json, content_hash, created_by, created_at
+)
+SELECT
+    id, content_revision, stem, options_json, correct_option_key, area, explanation,
+    hints_json, source_json, content_hash, updated_by, updated_at
+FROM question_versions;
+
+CREATE TABLE review_bindings (
+    review_event_id INTEGER PRIMARY KEY REFERENCES review_events(id),
+    question_version_id TEXT NOT NULL,
+    content_revision INTEGER NOT NULL CHECK (content_revision > 0),
+    content_hash TEXT NOT NULL,
+    FOREIGN KEY (question_version_id, content_revision)
+        REFERENCES question_version_revisions(question_version_id, content_revision)
+);
+
+CREATE INDEX idx_review_bindings_revision
+    ON review_bindings(question_version_id, content_revision, review_event_id);
+
+DROP TRIGGER require_review_before_publish;
+DROP TRIGGER prevent_published_version_content_update;
+
+CREATE TRIGGER prevent_question_identity_update
+BEFORE UPDATE ON questions
+WHEN
+    NEW.id IS NOT OLD.id OR
+    NEW.exam_id IS NOT OLD.exam_id OR
+    NEW.stable_id IS NOT OLD.stable_id OR
+    NEW.created_at IS NOT OLD.created_at
+BEGIN
+    SELECT RAISE(ABORT, 'question identity is immutable');
+END;
+
+CREATE TRIGGER prevent_question_version_identity_update
+BEFORE UPDATE ON question_versions
+WHEN
+    NEW.id IS NOT OLD.id OR
+    NEW.question_id IS NOT OLD.question_id OR
+    NEW.version IS NOT OLD.version OR
+    NEW.created_by IS NOT OLD.created_by OR
+    NEW.created_at IS NOT OLD.created_at
+BEGIN
+    SELECT RAISE(ABORT, 'question version identity is immutable');
+END;
+
+CREATE TRIGGER prevent_published_version_content_update
+BEFORE UPDATE ON question_versions
+WHEN OLD.status != 'draft' AND (
+    NEW.question_id IS NOT OLD.question_id OR
+    NEW.version IS NOT OLD.version OR
+    NEW.stem IS NOT OLD.stem OR
+    NEW.options_json IS NOT OLD.options_json OR
+    NEW.correct_option_key IS NOT OLD.correct_option_key OR
+    NEW.area IS NOT OLD.area OR
+    NEW.explanation IS NOT OLD.explanation OR
+    NEW.hints_json IS NOT OLD.hints_json OR
+    NEW.source_json IS NOT OLD.source_json OR
+    NEW.content_hash IS NOT OLD.content_hash OR
+    NEW.content_revision IS NOT OLD.content_revision OR
+    NEW.updated_by IS NOT OLD.updated_by OR
+    NEW.created_by IS NOT OLD.created_by OR
+    NEW.created_at IS NOT OLD.created_at OR
+    NEW.published_at IS NOT OLD.published_at
+)
+BEGIN
+    SELECT RAISE(ABORT, 'non-draft question version content is immutable');
+END;
+
+CREATE TRIGGER validate_draft_content_revision
+BEFORE UPDATE ON question_versions
+WHEN OLD.status = 'draft' AND (
+    NEW.stem IS NOT OLD.stem OR
+    NEW.options_json IS NOT OLD.options_json OR
+    NEW.correct_option_key IS NOT OLD.correct_option_key OR
+    NEW.area IS NOT OLD.area OR
+    NEW.explanation IS NOT OLD.explanation OR
+    NEW.hints_json IS NOT OLD.hints_json OR
+    NEW.source_json IS NOT OLD.source_json OR
+    NEW.content_hash IS NOT OLD.content_hash
+) AND NOT (
+    OLD.status = 'draft' AND
+    NEW.status = 'draft' AND
+    NEW.content_revision = OLD.content_revision + 1
+)
+BEGIN
+    SELECT RAISE(ABORT, 'draft content update must create the next revision');
+END;
+
+CREATE TRIGGER prevent_empty_content_revision
+BEFORE UPDATE ON question_versions
+WHEN NEW.content_revision IS NOT OLD.content_revision AND NOT (
+    NEW.stem IS NOT OLD.stem OR
+    NEW.options_json IS NOT OLD.options_json OR
+    NEW.correct_option_key IS NOT OLD.correct_option_key OR
+    NEW.area IS NOT OLD.area OR
+    NEW.explanation IS NOT OLD.explanation OR
+    NEW.hints_json IS NOT OLD.hints_json OR
+    NEW.source_json IS NOT OLD.source_json OR
+    NEW.content_hash IS NOT OLD.content_hash
+)
+BEGIN
+    SELECT RAISE(ABORT, 'content revision requires a content change');
+END;
+
+CREATE TRIGGER snapshot_question_version_insert
+AFTER INSERT ON question_versions
+BEGIN
+    INSERT INTO question_version_revisions (
+        question_version_id, content_revision, stem, options_json, correct_option_key,
+        area, explanation, hints_json, source_json, content_hash, created_by, created_at
+    ) VALUES (
+        NEW.id, NEW.content_revision, NEW.stem, NEW.options_json, NEW.correct_option_key,
+        NEW.area, NEW.explanation, NEW.hints_json, NEW.source_json, NEW.content_hash,
+        NEW.updated_by, NEW.created_at
+    );
+END;
+
+CREATE TRIGGER snapshot_question_version_update
+AFTER UPDATE OF content_revision ON question_versions
+WHEN NEW.content_revision = OLD.content_revision + 1
+BEGIN
+    INSERT INTO question_version_revisions (
+        question_version_id, content_revision, stem, options_json, correct_option_key,
+        area, explanation, hints_json, source_json, content_hash, created_by, created_at
+    ) VALUES (
+        NEW.id, NEW.content_revision, NEW.stem, NEW.options_json, NEW.correct_option_key,
+        NEW.area, NEW.explanation, NEW.hints_json, NEW.source_json, NEW.content_hash,
+        NEW.updated_by, NEW.updated_at
+    );
+END;
+
+CREATE TRIGGER prevent_question_revision_update
+BEFORE UPDATE ON question_version_revisions
+BEGIN
+    SELECT RAISE(ABORT, 'question content revision is immutable');
+END;
+
+CREATE TRIGGER prevent_question_revision_delete
+BEFORE DELETE ON question_version_revisions
+BEGIN
+    SELECT RAISE(ABORT, 'question content revision is immutable');
+END;
+
+CREATE TRIGGER prevent_review_event_update
+BEFORE UPDATE ON review_events
+BEGIN
+    SELECT RAISE(ABORT, 'question review event is immutable');
+END;
+
+CREATE TRIGGER prevent_review_event_delete
+BEFORE DELETE ON review_events
+BEGIN
+    SELECT RAISE(ABORT, 'question review event is immutable');
+END;
+
+CREATE TRIGGER validate_review_binding
+BEFORE INSERT ON review_bindings
+WHEN NOT EXISTS (
+    SELECT 1
+    FROM review_events AS event
+    JOIN question_version_revisions AS revision
+      ON revision.question_version_id = NEW.question_version_id
+     AND revision.content_revision = NEW.content_revision
+    WHERE event.id = NEW.review_event_id
+      AND event.question_version_id = NEW.question_version_id
+      AND event.action = 'reviewed'
+      AND revision.content_hash = NEW.content_hash
+)
+BEGIN
+    SELECT RAISE(ABORT, 'review binding must match a reviewed content revision');
+END;
+
+CREATE TRIGGER prevent_review_binding_update
+BEFORE UPDATE ON review_bindings
+BEGIN
+    SELECT RAISE(ABORT, 'review binding is immutable');
+END;
+
+CREATE TRIGGER prevent_review_binding_delete
+BEFORE DELETE ON review_bindings
+BEGIN
+    SELECT RAISE(ABORT, 'review binding is immutable');
+END;
+
+CREATE TRIGGER require_review_before_publish
+BEFORE UPDATE OF status ON question_versions
+WHEN NEW.status = 'published' AND OLD.status != 'published' AND NOT EXISTS (
+    SELECT 1
+    FROM review_bindings AS binding
+    JOIN review_events AS event ON event.id = binding.review_event_id
+    WHERE binding.question_version_id = OLD.id
+      AND binding.content_revision = OLD.content_revision
+      AND binding.content_hash = OLD.content_hash
+      AND event.action = 'reviewed'
+)
+BEGIN
+    SELECT RAISE(ABORT, 'current question revision must be reviewed before publication');
+END;
+"""
+
+
 _LEARNING_V1 = """
 CREATE TABLE attempts (
     id TEXT PRIMARY KEY,
@@ -293,7 +524,7 @@ CREATE INDEX idx_review_queue_pending
 class CatalogStore(_SQLiteStore):
     """Authoritative deployment-wide exam and immutable question catalog."""
 
-    migrations = (_CATALOG_V1, _CATALOG_V2)
+    migrations = (_CATALOG_V1, _CATALOG_V2, _CATALOG_V3)
 
 
 class LearningStore(_SQLiteStore):

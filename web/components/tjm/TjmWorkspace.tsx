@@ -35,6 +35,7 @@ import Button from '@/components/ui/Button'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { useTjmVoice } from '@/hooks/useTjmVoice'
 import { fetchAuthStatus } from '@/lib/auth'
+import { adminReviewActions, selectAdminReviewQuestions } from '@/lib/tjm-admin'
 import {
   activateTjmExam,
   cancelTjmVoiceCandidate,
@@ -1417,7 +1418,7 @@ function AdminPanel({
         </div>
         {!questions.length ? (
           <p className="px-5 py-8 text-sm text-[var(--muted-foreground)]">
-            No draft questions are waiting for review.
+            No draft or legacy questions are waiting for review.
           </p>
         ) : (
           <div className="divide-y divide-[var(--border)]">
@@ -1434,19 +1435,25 @@ function AdminPanel({
                   <span
                     className={`rounded-full px-2.5 py-1 text-[10px] font-semibold ${question.reviewed_by ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-amber-500/10 text-amber-700 dark:text-amber-300'}`}
                   >
-                    {question.reviewed_by ? 'reviewed' : 'unreviewed'}
+                    {question.review_binding_state === 'legacy_unverified'
+                      ? 'legacy re-review required'
+                      : question.reviewed_by
+                        ? 'reviewed'
+                        : 'unreviewed'}
                   </span>
                 </div>
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => setEditing(question)}
-                  >
-                    Edit
-                  </Button>
-                  {!question.reviewed_by ? (
+                  {adminReviewActions(question).canEdit ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setEditing(question)}
+                    >
+                      Edit
+                    </Button>
+                  ) : null}
+                  {adminReviewActions(question).canReview ? (
                     <Button
                       type="button"
                       size="sm"
@@ -1461,7 +1468,7 @@ function AdminPanel({
                     >
                       Mark reviewed
                     </Button>
-                  ) : (
+                  ) : adminReviewActions(question).canPublish ? (
                     <Button
                       type="button"
                       size="sm"
@@ -1475,21 +1482,23 @@ function AdminPanel({
                     >
                       Publish
                     </Button>
-                  )}
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    loading={localBusy}
-                    onClick={() =>
-                      void act(
-                        () => rejectTjmQuestion(question.id, 'Rejected in TJM admin workspace'),
-                        'Draft rejected.'
-                      )
-                    }
-                  >
-                    Reject
-                  </Button>
+                  ) : null}
+                  {adminReviewActions(question).canReject ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      loading={localBusy}
+                      onClick={() =>
+                        void act(
+                          () => rejectTjmQuestion(question.id, 'Rejected in TJM admin workspace'),
+                          'Draft rejected.'
+                        )
+                      }
+                    >
+                      Reject
+                    </Button>
+                  ) : null}
                 </div>
               </article>
             ))}
@@ -1538,7 +1547,12 @@ export default function TjmWorkspace() {
         getTjmHistory(),
         getTjmReviewQueue(),
         getTjmAnalytics(),
-        admin ? listTjmReviewQuestions('draft') : Promise.resolve([]),
+        admin
+          ? Promise.all([
+              listTjmReviewQuestions('draft'),
+              listTjmReviewQuestions('published'),
+            ]).then(([drafts, published]) => selectAdminReviewQuestions(drafts, published))
+          : Promise.resolve([]),
       ])
       setExams(nextExams)
       setHistory(nextHistory)
