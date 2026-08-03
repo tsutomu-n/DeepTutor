@@ -44,6 +44,7 @@ import {
 import {
   activateTjmExam,
   cancelTjmVoiceCandidate,
+  classifyLegacyTjmRetirement,
   confirmTjmVoiceCandidate,
   createTjmExam,
   getTjmAnalytics,
@@ -59,6 +60,7 @@ import {
   recordTjmVoiceCandidate,
   requestTjmHint,
   rejectTjmQuestion,
+  retireTjmQuestion,
   reviewTjmQuestion,
   startTjmAttempt,
   startTjmReviewAttempt,
@@ -288,7 +290,9 @@ function AttemptDesk({
   const [expiryPoll, setExpiryPoll] = useState(0)
   const openedAtRef = useRef<Record<number, number>>({})
   const expiryRefreshRef = useRef<string | null>(null)
-  const openRequestsRef = useRef(new Map<string, Promise<Awaited<ReturnType<typeof openTjmAttemptItem>>>>())
+  const openRequestsRef = useRef(
+    new Map<string, Promise<Awaited<ReturnType<typeof openTjmAttemptItem>>>>()
+  )
   const voiceTargetRef = useRef<{ attemptId: string; position: number } | null>(null)
   const commandLedgerRef = useRef<TjmCommandLedger | null>(null)
   if (!commandLedgerRef.current) {
@@ -303,7 +307,12 @@ function AttemptDesk({
   const finalized = attempt.status !== 'in_progress'
   const itemScope = `${attempt.id}:${position}`
   const answerScope = `answer:${itemScope}`
-  const serverOpened = finalized || Boolean(item?.first_presented_at) || Boolean(openedItems[itemScope])
+  const itemEligible = item?.grading_status !== 'content_invalidated'
+  const serverOpened =
+    finalized ||
+    !itemEligible ||
+    Boolean(item?.first_presented_at) ||
+    Boolean(openedItems[itemScope])
   const deadlineReached = secondsLeft === 0
   const canAnswer = canAnswerTjmItem({
     status: attempt.status,
@@ -311,6 +320,7 @@ function AttemptDesk({
     confirmed: Boolean(item?.confirmed_option_key),
     serverOpened,
     secondsLeft,
+    gradingStatus: item?.grading_status ?? 'content_invalidated',
   })
   const applyAttempt = useCallback(
     (updated: TjmAttempt) => {
@@ -369,16 +379,8 @@ function AttemptDesk({
   })
   const { stopListening, stopSpeaking } = voice
   const interactionBusy =
-    actionBusy ||
-    busy ||
-    voice.state !== 'idle' ||
-    voiceCandidate !== null ||
-    submitOpen
-  const navigationLocked = !canNavigateTjmAttempt(
-    attempt.status,
-    serverOpened,
-    interactionBusy
-  )
+    actionBusy || busy || voice.state !== 'idle' || voiceCandidate !== null || submitOpen
+  const navigationLocked = !canNavigateTjmAttempt(attempt.status, serverOpened, interactionBusy)
 
   useEffect(() => {
     setPosition(current => Math.min(current, Math.max(0, attempt.items.length - 1)))
@@ -389,7 +391,14 @@ function AttemptDesk({
   }, [position])
 
   useEffect(() => {
-    if (!item || finalized || item.first_presented_at || openedItems[itemScope]) return
+    if (
+      !item ||
+      finalized ||
+      item.grading_status !== 'eligible' ||
+      item.first_presented_at ||
+      openedItems[itemScope]
+    )
+      return
     let active = true
     setOpeningItems(current => ({ ...current, [itemScope]: true }))
     let request = openRequestsRef.current.get(itemScope)
@@ -429,22 +438,20 @@ function AttemptDesk({
     return () => {
       active = false
     }
-  }, [
-    applyAttempt,
-    attempt.id,
-    finalized,
-    item,
-    itemScope,
-    openRetry,
-    openedItems,
-    position,
-  ])
+  }, [applyAttempt, attempt.id, finalized, item, itemScope, openRetry, openedItems, position])
 
   useEffect(() => {
     setVoiceCandidate(null)
     voiceTargetRef.current = null
     void stopListening().catch(reason => setError(messageOf(reason)))
   }, [position, stopListening])
+
+  useEffect(() => {
+    if (item?.grading_status === 'eligible') return
+    voiceTargetRef.current = null
+    setVoiceCandidate(null)
+    void stopListening().catch(reason => setError(messageOf(reason)))
+  }, [item?.grading_status, stopListening])
 
   useEffect(() => {
     if (!finalized) return
@@ -484,7 +491,9 @@ function AttemptDesk({
         await stopListening()
       } catch (reason) {
         if (active) {
-          setError(`Microphone shutdown failed; deadline finalization continued. ${messageOf(reason)}`)
+          setError(
+            `Microphone shutdown failed; deadline finalization continued. ${messageOf(reason)}`
+          )
         }
       }
       stopSpeaking()
@@ -499,7 +508,9 @@ function AttemptDesk({
         applyAttempt(updated)
       } catch (reason) {
         if (!active) return
-        setError(`The deadline was reached, but final status could not be refreshed. ${messageOf(reason)}`)
+        setError(
+          `The deadline was reached, but final status could not be refreshed. ${messageOf(reason)}`
+        )
         expiryRefreshRef.current = null
         retryTimer = window.setTimeout(() => setExpiryPoll(value => value + 1), 2000)
       }
@@ -786,9 +797,7 @@ function AttemptDesk({
               disabled={!serverOpened || (deadlineReached && !finalized)}
               icon={voice.state === 'speaking' ? <VolumeX size={15} /> : <Volume2 size={15} />}
               onClick={() =>
-                voice.state === 'speaking'
-                  ? voice.stopSpeaking()
-                  : void voice.speak(questionSpeech)
+                voice.state === 'speaking' ? voice.stopSpeaking() : void voice.speak(questionSpeech)
               }
             >
               {voice.state === 'speaking' ? 'Stop reading' : 'Read question'}
@@ -810,47 +819,49 @@ function AttemptDesk({
           </div>
 
           <div className="grid gap-2.5" role="radiogroup" aria-label="Answer choices">
-            {serverOpened ? item.choices.map((choice, index) => {
-              const chosen = choice.key === selectedKey
-              const graded = hasGrade(item)
-              const correct = graded && choice.key === item.correct_option_key
-              const wrong = graded && chosen && !correct
-              return (
-                <button
-                  key={choice.key}
-                  type="button"
-                  role="radio"
-                  aria-checked={chosen}
-                  disabled={!canAnswer || interactionBusy}
-                  onClick={() => {
-                    commandLedger.abandon(answerScope)
-                    setSelected(value => ({ ...value, [position]: choice.key }))
-                  }}
-                  className={`group flex w-full items-start gap-3 rounded-xl border px-4 py-3.5 text-left text-sm leading-6 transition disabled:cursor-default ${
-                    correct
-                      ? 'border-emerald-500/60 bg-emerald-500/8'
-                      : wrong
-                        ? 'border-[var(--destructive)]/50 bg-[var(--destructive)]/5'
-                        : chosen
-                          ? 'border-[var(--foreground)] bg-[var(--accent)]/65 shadow-sm'
-                          : 'border-[var(--border)] bg-[var(--background)] hover:border-[var(--muted-foreground)]/55 hover:bg-[var(--secondary)]/45'
-                  }`}
-                >
-                  <span
-                    className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md border font-mono text-[11px] font-semibold ${chosen ? 'border-[var(--foreground)] bg-[var(--foreground)] text-[var(--background)]' : 'border-[var(--border)]'}`}
-                  >
-                    {index + 1}
-                  </span>
-                  <span>{choice.text}</span>
-                </button>
-              )
-            }) : Array.from({ length: item.choices.length }, (_, index) => (
-              <div
-                key={`opening-${index}`}
-                aria-hidden="true"
-                className="h-[54px] animate-pulse rounded-xl border border-[var(--border)] bg-[var(--secondary)]/45"
-              />
-            ))}
+            {serverOpened
+              ? item.choices.map((choice, index) => {
+                  const chosen = choice.key === selectedKey
+                  const graded = hasGrade(item)
+                  const correct = graded && choice.key === item.correct_option_key
+                  const wrong = graded && chosen && !correct
+                  return (
+                    <button
+                      key={choice.key}
+                      type="button"
+                      role="radio"
+                      aria-checked={chosen}
+                      disabled={!canAnswer || interactionBusy}
+                      onClick={() => {
+                        commandLedger.abandon(answerScope)
+                        setSelected(value => ({ ...value, [position]: choice.key }))
+                      }}
+                      className={`group flex w-full items-start gap-3 rounded-xl border px-4 py-3.5 text-left text-sm leading-6 transition disabled:cursor-default ${
+                        correct
+                          ? 'border-emerald-500/60 bg-emerald-500/8'
+                          : wrong
+                            ? 'border-[var(--destructive)]/50 bg-[var(--destructive)]/5'
+                            : chosen
+                              ? 'border-[var(--foreground)] bg-[var(--accent)]/65 shadow-sm'
+                              : 'border-[var(--border)] bg-[var(--background)] hover:border-[var(--muted-foreground)]/55 hover:bg-[var(--secondary)]/45'
+                      }`}
+                    >
+                      <span
+                        className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md border font-mono text-[11px] font-semibold ${chosen ? 'border-[var(--foreground)] bg-[var(--foreground)] text-[var(--background)]' : 'border-[var(--border)]'}`}
+                      >
+                        {index + 1}
+                      </span>
+                      <span>{choice.text}</span>
+                    </button>
+                  )
+                })
+              : Array.from({ length: item.choices.length }, (_, index) => (
+                  <div
+                    key={`opening-${index}`}
+                    aria-hidden="true"
+                    className="h-[54px] animate-pulse rounded-xl border border-[var(--border)] bg-[var(--secondary)]/45"
+                  />
+                ))}
           </div>
 
           {canAnswer ? (
@@ -913,6 +924,16 @@ function AttemptDesk({
             </div>
           ) : null}
 
+          {item.grading_status === 'content_invalidated' ? (
+            <div
+              role="status"
+              className="mt-5 rounded-xl border border-amber-500/25 bg-amber-500/8 p-4 text-sm leading-6"
+            >
+              This question version was invalidated and is excluded from scoring and learning
+              analytics. Its historical answer events remain in the audit record.
+            </div>
+          ) : null}
+
           {error || voice.error ? (
             <div
               role="alert"
@@ -925,7 +946,8 @@ function AttemptDesk({
             <div className="mt-4 flex items-center gap-3 rounded-xl border border-amber-500/25 bg-amber-500/8 px-4 py-3 text-sm">
               {openingItems[itemScope] ? (
                 <>
-                  <Loader2 size={16} className="animate-spin" /> Starting server-side question timing…
+                  <Loader2 size={16} className="animate-spin" /> Starting server-side question
+                  timing…
                 </>
               ) : (
                 <>
@@ -963,9 +985,7 @@ function AttemptDesk({
                 type="button"
                 variant="ghost"
                 disabled={
-                  actionBusy ||
-                  busy ||
-                  !['idle', 'listening', 'speech'].includes(voice.state)
+                  actionBusy || busy || !['idle', 'listening', 'speech'].includes(voice.state)
                 }
                 loading={voice.state === 'loading' || voice.state === 'transcribing'}
                 icon={<Mic size={15} />}
@@ -1034,13 +1054,22 @@ function AttemptDesk({
       <aside className={`${panelClass} h-fit overflow-hidden xl:sticky xl:top-4`}>
         {finalized ? (
           <div className="border-b border-[var(--border)] bg-[var(--foreground)] px-5 py-5 text-[var(--background)]">
-            <p className="text-[10px] uppercase tracking-[0.16em] opacity-65">Final result</p>
+            <p className="text-[10px] uppercase tracking-[0.16em] opacity-65">
+              {attempt.content_invalidated_count > 0 ? 'Historical raw score' : 'Final result'}
+            </p>
             <p className="mt-2 font-serif text-3xl font-semibold tabular-nums">
               {attempt.correct_count ?? 0}
               <span className="text-lg opacity-60">
                 /{attempt.total_count ?? attempt.items.length}
               </span>
             </p>
+            {attempt.content_invalidated_count > 0 ? (
+              <p className="mt-2 text-xs leading-5 opacity-75">
+                Content invalidated: {attempt.content_invalidated_count} question version
+                {attempt.content_invalidated_count === 1 ? '' : 's'} no longer counts as an official
+                learning result.
+              </p>
+            ) : null}
           </div>
         ) : null}
         <div className="p-4">
@@ -1236,6 +1265,11 @@ function ReviewPanel({
                 <span className="font-mono text-sm font-semibold tabular-nums">
                   {attempt.correct_count ?? '—'}/{attempt.total_count ?? attempt.items.length}
                 </span>
+                {attempt.content_invalidated_count > 0 ? (
+                  <span className="rounded-full bg-amber-500/10 px-2 py-1 text-[10px] font-semibold text-amber-700 dark:text-amber-300">
+                    Content invalidated · raw score retained
+                  </span>
+                ) : null}
               </div>
             ))}
           </div>
@@ -1853,6 +1887,53 @@ function AdminPanel({
                       Reject
                     </Button>
                   ) : null}
+                  {adminReviewActions(question).canRetire ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      loading={localBusy}
+                      onClick={() => {
+                        const note = window.prompt(
+                          'Explain why this published question is invalid. This action preserves the audit history.'
+                        )
+                        if (!note?.trim()) return
+                        void act(
+                          () => retireTjmQuestion(question.id, note.trim()),
+                          'Published content invalidated.'
+                        )
+                      }}
+                    >
+                      Invalidate content
+                    </Button>
+                  ) : null}
+                  {adminReviewActions(question).canClassifySuperseded ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      loading={localBusy}
+                      onClick={() => {
+                        const replacementId = window.prompt(
+                          'Replacement question version ID for this legacy retirement:'
+                        )
+                        if (!replacementId?.trim()) return
+                        const note =
+                          window.prompt('Audit note describing the historical evidence:') ?? ''
+                        void act(
+                          () =>
+                            classifyLegacyTjmRetirement(
+                              question.id,
+                              replacementId.trim(),
+                              note.trim()
+                            ),
+                          'Legacy retirement classified as superseded.'
+                        )
+                      }}
+                    >
+                      Classify superseded
+                    </Button>
+                  ) : null}
                 </div>
               </article>
             ))}
@@ -1914,7 +1995,10 @@ export default function TjmWorkspace() {
           ? Promise.all([
               listTjmReviewQuestions('draft'),
               listTjmReviewQuestions('published'),
-            ]).then(([drafts, published]) => selectAdminReviewQuestions(drafts, published))
+              listTjmReviewQuestions('retired'),
+            ]).then(([drafts, published, retired]) =>
+              selectAdminReviewQuestions(drafts, published, retired)
+            )
           : Promise.resolve([]),
       ])
       setExams(nextExams)
@@ -1962,9 +2046,7 @@ export default function TjmWorkspace() {
     const scope = `start:${exam.id}:${mode}`
     const command = commandLedger.begin(scope, () => ({ examId: exam.id, mode }))
     try {
-      openAttempt(
-        await startTjmAttempt(command.payload.examId, command.payload.mode, command.key)
-      )
+      openAttempt(await startTjmAttempt(command.payload.examId, command.payload.mode, command.key))
       commandLedger.complete(scope, command.key)
     } catch (reason) {
       setError(messageOf(reason))

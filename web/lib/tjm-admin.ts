@@ -2,11 +2,13 @@ import type { TjmQuestionVersion } from '@/lib/tjm-types'
 
 export function selectAdminReviewQuestions(
   drafts: TjmQuestionVersion[],
-  published: TjmQuestionVersion[]
+  published: TjmQuestionVersion[],
+  retired: TjmQuestionVersion[] = []
 ): TjmQuestionVersion[] {
   return [
     ...drafts,
-    ...published.filter(question => question.review_binding_state === 'legacy_unverified'),
+    ...published,
+    ...retired.filter(question => question.retirement_reason === null),
   ]
 }
 
@@ -19,5 +21,7 @@ export function adminReviewActions(question: TjmQuestionVersion) {
     canReview: (draft || legacyPublication) && question.review_binding_state !== 'current',
     canPublish: draft && question.review_binding_state === 'current',
     canReject: draft,
+    canRetire: question.status === 'published',
+    canClassifySuperseded: question.status === 'retired' && question.retirement_reason === null,
   }
 }

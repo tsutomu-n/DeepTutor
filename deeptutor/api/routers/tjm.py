@@ -81,6 +81,17 @@ class ReviewNote(_StrictModel):
     note: str = ""
 
 
+class RetirementRequest(_StrictModel):
+    reason: Literal["invalid_content"]
+    note: str = ""
+
+
+class LegacyRetirementClassificationRequest(_StrictModel):
+    reason: Literal["superseded"]
+    replacement_question_version_id: str = Field(min_length=1, max_length=200)
+    note: str = ""
+
+
 class StartAttemptRequest(_StrictModel):
     exam_id: str = Field(min_length=1, max_length=200)
     mode: Literal["practice", "exam"]
@@ -296,11 +307,35 @@ def reject_question(
 @router.post("/review/questions/{version_id}/retire")
 def retire_question(
     version_id: str,
+    request: RetirementRequest,
     admin: TokenPayload = Depends(require_admin),
     catalog: CatalogService = Depends(get_catalog_service),
 ) -> dict[str, Any]:
     try:
-        return catalog.retire_question_version(version_id, actor_id=_actor(admin))
+        return catalog.retire_question_version(
+            version_id,
+            actor_id=_actor(admin),
+            reason=request.reason,
+            note=request.note,
+        )
+    except (DomainValidationError, InvalidTransitionError) as exc:
+        _raise_http(exc)
+
+
+@router.post("/review/questions/{version_id}/classify-retirement")
+def classify_legacy_retirement(
+    version_id: str,
+    request: LegacyRetirementClassificationRequest,
+    admin: TokenPayload = Depends(require_admin),
+    catalog: CatalogService = Depends(get_catalog_service),
+) -> dict[str, Any]:
+    try:
+        return catalog.classify_legacy_retirement(
+            version_id,
+            replacement_version_id=request.replacement_question_version_id,
+            actor_id=_actor(admin),
+            note=request.note,
+        )
     except (DomainValidationError, InvalidTransitionError) as exc:
         _raise_http(exc)
 

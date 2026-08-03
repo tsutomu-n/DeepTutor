@@ -6,10 +6,16 @@ interface TjmAttemptInteractionInput {
   confirmed: boolean
   serverOpened: boolean
   secondsLeft: number | null
+  gradingStatus: 'eligible' | 'content_invalidated'
 }
 
 export function canAnswerTjmItem(input: TjmAttemptInteractionInput): boolean {
-  if (input.status !== 'in_progress' || !input.serverOpened || input.secondsLeft === 0) {
+  if (
+    input.status !== 'in_progress' ||
+    !input.serverOpened ||
+    input.secondsLeft === 0 ||
+    input.gradingStatus !== 'eligible'
+  ) {
     return false
   }
   return !input.confirmed || input.mode === 'exam'

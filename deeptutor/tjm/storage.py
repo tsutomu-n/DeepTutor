@@ -450,6 +450,108 @@ END;
 """
 
 
+_CATALOG_V4 = """
+ALTER TABLE question_versions ADD COLUMN retirement_reason TEXT CHECK (
+    retirement_reason IS NULL OR
+    retirement_reason IN ('superseded', 'invalid_content')
+);
+ALTER TABLE question_versions ADD COLUMN retired_at TEXT;
+ALTER TABLE question_versions ADD COLUMN replacement_question_version_id TEXT
+    REFERENCES question_versions(id);
+
+CREATE INDEX idx_question_versions_replacement
+    ON question_versions(replacement_question_version_id);
+
+CREATE TRIGGER prevent_retirement_metadata_insert
+BEFORE INSERT ON question_versions
+WHEN
+    NEW.status = 'retired' OR
+    NEW.retirement_reason IS NOT NULL OR
+    NEW.retired_at IS NOT NULL OR
+    NEW.replacement_question_version_id IS NOT NULL
+BEGIN
+    SELECT RAISE(ABORT, 'question version must transition to retired');
+END;
+
+CREATE TRIGGER validate_new_question_retirement
+BEFORE UPDATE ON question_versions
+WHEN OLD.status = 'published' AND NEW.status = 'retired' AND (
+    NEW.retirement_reason IS NULL OR
+    NEW.retired_at IS NULL OR
+    (NEW.retirement_reason = 'superseded' AND (
+        NEW.replacement_question_version_id IS NULL OR
+        NOT EXISTS (
+            SELECT 1 FROM question_versions AS replacement
+            WHERE replacement.id = NEW.replacement_question_version_id
+              AND replacement.question_id = OLD.question_id
+              AND replacement.id != OLD.id
+              AND replacement.version > OLD.version
+        )
+    )) OR
+    (NEW.retirement_reason = 'invalid_content' AND
+        NEW.replacement_question_version_id IS NOT NULL)
+)
+BEGIN
+    SELECT RAISE(ABORT, 'invalid question retirement metadata');
+END;
+
+CREATE TRIGGER prevent_retirement_metadata_on_active_version
+BEFORE UPDATE ON question_versions
+WHEN NEW.status != 'retired' AND (
+    NEW.retirement_reason IS NOT NULL OR
+    NEW.retired_at IS NOT NULL OR
+    NEW.replacement_question_version_id IS NOT NULL
+)
+BEGIN
+    SELECT RAISE(ABORT, 'retirement metadata requires retired status');
+END;
+
+CREATE TRIGGER validate_retired_metadata_transition
+BEFORE UPDATE ON question_versions
+WHEN OLD.status = 'retired' AND NOT (
+    NEW.status = 'retired' AND
+    NEW.retired_at IS OLD.retired_at AND (
+        (
+            NEW.retirement_reason IS OLD.retirement_reason AND
+            NEW.replacement_question_version_id IS OLD.replacement_question_version_id
+        ) OR
+        (
+            OLD.retirement_reason IS NULL AND
+            NEW.retirement_reason = 'invalid_content' AND
+            NEW.replacement_question_version_id IS OLD.replacement_question_version_id
+        ) OR
+        (
+            OLD.retirement_reason IS NULL AND
+            NEW.retirement_reason = 'superseded' AND
+            NEW.replacement_question_version_id IS NOT NULL AND
+            EXISTS (
+                SELECT 1 FROM question_versions AS replacement
+                WHERE replacement.id = NEW.replacement_question_version_id
+                  AND replacement.question_id = OLD.question_id
+                  AND replacement.id != OLD.id
+                  AND replacement.version > OLD.version
+                  AND (
+                      replacement.status = 'published' OR
+                      (
+                          replacement.status = 'retired' AND
+                          replacement.retirement_reason = 'superseded'
+                      )
+                  )
+            )
+        ) OR
+        (
+            OLD.retirement_reason = 'superseded' AND
+            NEW.retirement_reason = 'invalid_content' AND
+            NEW.replacement_question_version_id IS OLD.replacement_question_version_id
+        )
+    )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'invalid retirement transition');
+END;
+"""
+
+
 _LEARNING_V1 = """
 CREATE TABLE attempts (
     id TEXT PRIMARY KEY,
@@ -579,16 +681,191 @@ END;
 """
 
 
+_LEARNING_V3 = """
+ALTER TABLE attempt_items ADD COLUMN catalog_disposition TEXT NOT NULL
+    DEFAULT 'unchecked' CHECK (
+        catalog_disposition IN (
+            'unchecked', 'current', 'superseded',
+            'invalid_content', 'retired_unclassified'
+        )
+    );
+ALTER TABLE attempt_items ADD COLUMN content_invalidated_at TEXT;
+
+ALTER TABLE review_queue ADD COLUMN resolution_reason TEXT;
+ALTER TABLE review_queue ADD COLUMN resolution_attempt_id TEXT
+    REFERENCES attempts(id);
+
+CREATE TABLE review_attempt_queue_links (
+    attempt_id TEXT NOT NULL REFERENCES attempts(id),
+    queue_row_id INTEGER NOT NULL REFERENCES review_queue(id),
+    linked_at TEXT NOT NULL,
+    PRIMARY KEY (attempt_id, queue_row_id)
+);
+
+CREATE INDEX idx_review_attempt_queue_links_queue
+    ON review_attempt_queue_links(queue_row_id);
+
+CREATE TRIGGER validate_review_attempt_queue_link
+BEFORE INSERT ON review_attempt_queue_links
+WHEN NOT EXISTS (
+    SELECT 1
+    FROM attempts AS attempt
+    JOIN attempt_items AS item ON item.attempt_id = attempt.id
+    JOIN review_queue AS queue ON queue.id = NEW.queue_row_id
+    WHERE attempt.id = NEW.attempt_id
+      AND attempt.mode = 'review'
+      AND attempt.status = 'in_progress'
+      AND item.question_version_id = queue.question_version_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'review queue link must match an active review item');
+END;
+
+CREATE TRIGGER prevent_review_attempt_queue_link_update
+BEFORE UPDATE ON review_attempt_queue_links
+BEGIN
+    SELECT RAISE(ABORT, 'review attempt queue link is immutable');
+END;
+
+CREATE TRIGGER prevent_review_attempt_queue_link_delete
+BEFORE DELETE ON review_attempt_queue_links
+BEGIN
+    SELECT RAISE(ABORT, 'review attempt queue link is immutable');
+END;
+
+CREATE TRIGGER prevent_review_queue_delete
+BEFORE DELETE ON review_queue
+BEGIN
+    SELECT RAISE(ABORT, 'review queue history is immutable');
+END;
+
+CREATE TRIGGER prevent_review_queue_identity_update
+BEFORE UPDATE ON review_queue
+WHEN
+    NEW.id IS NOT OLD.id OR
+    NEW.question_version_id IS NOT OLD.question_version_id OR
+    NEW.reason IS NOT OLD.reason OR
+    NEW.priority IS NOT OLD.priority OR
+    NEW.due_at IS NOT OLD.due_at OR
+    NEW.source_attempt_id IS NOT OLD.source_attempt_id OR
+    NEW.created_at IS NOT OLD.created_at
+BEGIN
+    SELECT RAISE(ABORT, 'review queue identity is immutable');
+END;
+
+CREATE TRIGGER validate_review_queue_insert
+BEFORE INSERT ON review_queue
+WHEN NOT (
+    NEW.status = 'pending' AND
+    NEW.resolved_at IS NULL AND
+    NEW.resolution_reason IS NULL AND
+    NEW.resolution_attempt_id IS NULL
+)
+BEGIN
+    SELECT RAISE(ABORT, 'new review queue row must be pending');
+END;
+
+CREATE TRIGGER validate_review_queue_resolution
+BEFORE UPDATE ON review_queue
+WHEN NOT (
+    (
+        OLD.status = 'pending' AND NEW.status = 'pending' AND
+        NEW.resolved_at IS NULL AND NEW.resolution_reason IS NULL AND
+        NEW.resolution_attempt_id IS NULL
+    ) OR
+    (
+        OLD.status = 'pending' AND NEW.status = 'completed' AND
+        NEW.resolved_at IS NOT NULL AND NEW.resolution_reason IS NOT NULL AND
+        NEW.resolution_attempt_id IS NOT NULL AND EXISTS (
+            SELECT 1 FROM review_attempt_queue_links AS link
+            WHERE link.queue_row_id = OLD.id
+              AND link.attempt_id = NEW.resolution_attempt_id
+        )
+    ) OR
+    (
+        OLD.status = 'pending' AND NEW.status = 'dismissed' AND
+        NEW.resolved_at IS NOT NULL AND NEW.resolution_reason IS NOT NULL AND
+        NEW.resolution_attempt_id IS NULL
+    ) OR
+    (
+        OLD.status IN ('completed', 'dismissed') AND
+        NEW.status = OLD.status AND
+        NEW.resolved_at IS OLD.resolved_at AND
+        NEW.resolution_reason IS OLD.resolution_reason AND
+        NEW.resolution_attempt_id IS OLD.resolution_attempt_id
+    )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'invalid review queue resolution transition');
+END;
+
+
+CREATE TRIGGER validate_attempt_item_catalog_disposition_insert
+BEFORE INSERT ON attempt_items
+WHEN NOT (
+    (
+        NEW.catalog_disposition IN ('unchecked', 'current', 'superseded') AND
+        NEW.content_invalidated_at IS NULL
+    ) OR
+    (
+        NEW.catalog_disposition IN ('invalid_content', 'retired_unclassified') AND
+        NEW.content_invalidated_at IS NOT NULL
+    )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'invalid initial catalog disposition');
+END;
+
+CREATE TRIGGER validate_attempt_item_catalog_disposition
+BEFORE UPDATE OF catalog_disposition, content_invalidated_at ON attempt_items
+WHEN NOT (
+    (
+        NEW.catalog_disposition = OLD.catalog_disposition AND
+        NEW.content_invalidated_at IS OLD.content_invalidated_at
+    ) OR
+    (
+        OLD.catalog_disposition = 'unchecked' AND
+        NEW.catalog_disposition IN ('current', 'superseded') AND
+        NEW.content_invalidated_at IS NULL
+    ) OR
+    (
+        OLD.catalog_disposition IN ('unchecked', 'current', 'superseded',
+                                    'retired_unclassified') AND
+        NEW.catalog_disposition = 'invalid_content' AND
+        NEW.content_invalidated_at IS NOT NULL
+    ) OR
+    (
+        OLD.catalog_disposition IN ('unchecked', 'current') AND
+        NEW.catalog_disposition = 'superseded' AND
+        NEW.content_invalidated_at IS NULL
+    ) OR
+    (
+        OLD.catalog_disposition IN ('unchecked', 'current') AND
+        NEW.catalog_disposition = 'retired_unclassified' AND
+        NEW.content_invalidated_at IS NOT NULL
+    ) OR
+    (
+        OLD.catalog_disposition = 'retired_unclassified' AND
+        NEW.catalog_disposition = 'superseded' AND
+        NEW.content_invalidated_at IS NULL
+    )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'invalid catalog disposition transition');
+END;
+"""
+
+
 class CatalogStore(_SQLiteStore):
     """Authoritative deployment-wide exam and immutable question catalog."""
 
-    migrations = (_CATALOG_V1, _CATALOG_V2, _CATALOG_V3)
+    migrations = (_CATALOG_V1, _CATALOG_V2, _CATALOG_V3, _CATALOG_V4)
 
 
 class LearningStore(_SQLiteStore):
     """Request-owner-scoped attempts and append-only answer history."""
 
-    migrations = (_LEARNING_V1, _LEARNING_V2)
+    migrations = (_LEARNING_V1, _LEARNING_V2, _LEARNING_V3)
 
 
 __all__ = ["CatalogStore", "LearningStore", "UnsupportedSchemaVersion"]

@@ -39,6 +39,7 @@ function leakedAttempt(status: TjmAttempt['status']): TjmAttempt {
     correct_count: status === 'in_progress' ? null : 1,
     total_count: status === 'in_progress' ? null : 1,
     answered_count: 1,
+    content_invalidated_count: 0,
     items: [
       {
         position: 0,
@@ -61,6 +62,9 @@ function leakedAttempt(status: TjmAttempt['status']): TjmAttempt {
         server_elapsed_ms: 20_000,
         client_active_elapsed_ms: 20_000,
         hint_count: 0,
+        catalog_disposition: 'current',
+        content_invalidated_at: null,
+        grading_status: 'eligible',
         correct_option_key: 'B',
         explanation: 'Should stay hidden until submit.',
         is_correct: true,

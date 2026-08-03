@@ -135,7 +135,21 @@ def test_start_attempt_replay_precedes_changed_catalog_and_normalizes_exam_id(
         mode="exam",
         idempotency_key="start-before-catalog-change",
     )
-    catalog.retire_question_version(published_ids[0], actor_id="admin-1")
+    service.present_item(first["id"], position=0)
+    service.record_answer(
+        first["id"],
+        position=0,
+        selected_option_key="A",
+        confidence=50,
+        elapsed_ms=100,
+        confirmed=True,
+    )
+    progressed_replay = service.start_attempt(
+        exam_id="exam-attempt",
+        mode="exam",
+        idempotency_key="start-before-catalog-change",
+    )
+    catalog.retire_question_version(published_ids[0], actor_id="admin-1", reason="invalid_content")
     changed_catalog_replay = service.start_attempt(
         exam_id="exam-attempt",
         mode="exam",
@@ -143,7 +157,15 @@ def test_start_attempt_replay_precedes_changed_catalog_and_normalizes_exam_id(
     )
 
     assert canonical_replay == first
-    assert changed_catalog_replay == first
+    assert progressed_replay == first
+    invalidated = next(
+        item
+        for item in changed_catalog_replay["items"]
+        if item["question_version_id"] == published_ids[0]
+    )
+    assert invalidated["catalog_disposition"] == "invalid_content"
+    assert invalidated["grading_status"] == "content_invalidated"
+    assert changed_catalog_replay["content_invalidated_count"] == 1
     with learning.connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 1
 
@@ -170,7 +192,11 @@ def test_start_review_replay_precedes_empty_queue_check(tmp_path: Path) -> None:
     )
     with learning.connect() as conn:
         conn.execute(
-            "UPDATE review_queue SET status = 'completed', resolved_at = ?",
+            """
+            UPDATE review_queue SET
+                status = 'dismissed', resolved_at = ?,
+                resolution_reason = 'test_queue_cleared'
+            """,
             ("2026-01-01T00:00:00Z",),
         )
 
@@ -596,6 +622,7 @@ def test_submit_command_replay_returns_original_result_without_duplicate_queue(
     first = service.submit_attempt(attempt["id"], idempotency_key="submit-command-1")
     with learning.connect() as conn:
         first_queue_count = conn.execute("SELECT COUNT(*) FROM review_queue").fetchone()[0]
+    _publish(catalog, "q-a1", "area-a", correct="A")
     replay = service.submit_attempt(attempt["id"], idempotency_key="submit-command-1")
 
     assert replay == first

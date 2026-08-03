@@ -58,11 +58,7 @@ function jsonInit(method: string, body?: unknown): RequestInit {
   }
 }
 
-export function tjmCommandInit(
-  method: string,
-  body: unknown,
-  idempotencyKey: string
-): RequestInit {
+export function tjmCommandInit(method: string, body: unknown, idempotencyKey: string): RequestInit {
   return {
     method,
     headers: {
@@ -134,8 +130,26 @@ export function rejectTjmQuestion(versionId: string, note: string): Promise<TjmQ
   )
 }
 
-export function retireTjmQuestion(versionId: string): Promise<TjmQuestionVersion> {
-  return requestJson(`/review/questions/${encodeURIComponent(versionId)}/retire`, jsonInit('POST'))
+export function retireTjmQuestion(versionId: string, note = ''): Promise<TjmQuestionVersion> {
+  return requestJson(
+    `/review/questions/${encodeURIComponent(versionId)}/retire`,
+    jsonInit('POST', { reason: 'invalid_content', note })
+  )
+}
+
+export function classifyLegacyTjmRetirement(
+  versionId: string,
+  replacementQuestionVersionId: string,
+  note = ''
+): Promise<TjmQuestionVersion> {
+  return requestJson(
+    `/review/questions/${encodeURIComponent(versionId)}/classify-retirement`,
+    jsonInit('POST', {
+      reason: 'superseded',
+      replacement_question_version_id: replacementQuestionVersionId,
+      note,
+    })
+  )
 }
 
 export async function startTjmAttempt(
@@ -156,10 +170,7 @@ export async function getTjmAttempt(attemptId: string): Promise<TjmAttempt> {
   )
 }
 
-export function openTjmAttemptItem(
-  attemptId: string,
-  position: number
-): Promise<TjmAttemptItem> {
+export function openTjmAttemptItem(attemptId: string, position: number): Promise<TjmAttemptItem> {
   return requestJson(
     `/attempts/${encodeURIComponent(attemptId)}/items/${position}/open`,
     jsonInit('POST')

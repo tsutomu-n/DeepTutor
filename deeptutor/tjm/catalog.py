@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import sqlite3
-from typing import Any
+from typing import Any, Literal
 import uuid
 
 from .domain import (
@@ -475,23 +475,142 @@ class CatalogService:
             )
         return self.get_question_version(version_id)
 
-    def retire_question_version(self, version_id: str, *, actor_id: str) -> dict[str, Any]:
+    def retire_question_version(
+        self,
+        version_id: str,
+        *,
+        actor_id: str,
+        reason: Literal["invalid_content"],
+        note: str = "",
+    ) -> dict[str, Any]:
         actor = _require_actor(actor_id)
+        if reason != "invalid_content":
+            raise DomainValidationError(
+                "manual retirement reason must be invalid_content; "
+                "superseded is recorded when a replacement is published"
+            )
         now = _now()
         with self.store.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            if self._version_status(conn, version_id) != "published":
-                raise InvalidTransitionError("only published versions can be retired")
-            conn.execute(
-                "UPDATE question_versions SET status = 'retired', updated_at = ? WHERE id = ?",
-                (now, version_id),
-            )
+            row = conn.execute(
+                """
+                SELECT status, retirement_reason
+                FROM question_versions WHERE id = ?
+                """,
+                (version_id,),
+            ).fetchone()
+            if row is None:
+                raise DomainValidationError(f"unknown question version: {version_id}")
+            if row["status"] == "published":
+                conn.execute(
+                    """
+                    UPDATE question_versions SET
+                        status = 'retired', retirement_reason = 'invalid_content',
+                        retired_at = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (now, now, version_id),
+                )
+            elif row["status"] == "retired" and row["retirement_reason"] in {
+                None,
+                "superseded",
+            }:
+                conn.execute(
+                    """
+                    UPDATE question_versions SET
+                        retirement_reason = 'invalid_content', updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (now, version_id),
+                )
+            elif row["status"] == "retired":
+                raise InvalidTransitionError("question version is already invalidated")
+            else:
+                raise InvalidTransitionError(
+                    "only published or previously retired versions can be invalidated"
+                )
             conn.execute(
                 """
                 INSERT INTO review_events (question_version_id, action, actor_id, note, created_at)
-                VALUES (?, 'retired', ?, '', ?)
+                VALUES (?, 'retired', ?, ?, ?)
                 """,
-                (version_id, actor, now),
+                (version_id, actor, note.strip(), now),
+            )
+        return self.get_question_version(version_id)
+
+    def classify_legacy_retirement(
+        self,
+        version_id: str,
+        *,
+        replacement_version_id: str,
+        actor_id: str,
+        note: str = "",
+    ) -> dict[str, Any]:
+        """Classify one migrated, unclassified retirement using verified evidence."""
+        actor = _require_actor(actor_id)
+        replacement_id = replacement_version_id.strip()
+        if not replacement_id:
+            raise DomainValidationError("replacement question version is required")
+        now = _now()
+        with self.store.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                SELECT question_id, version, status, retirement_reason
+                FROM question_versions WHERE id = ?
+                """,
+                (version_id,),
+            ).fetchone()
+            if row is None:
+                raise DomainValidationError(f"unknown question version: {version_id}")
+            if row["status"] != "retired":
+                raise InvalidTransitionError("only a retired question version can be classified")
+            if row["retirement_reason"] is not None:
+                raise InvalidTransitionError("legacy retirement is already classified")
+            replacement = conn.execute(
+                """
+                SELECT question_id, version, status, retirement_reason
+                FROM question_versions WHERE id = ?
+                """,
+                (replacement_id,),
+            ).fetchone()
+            if replacement is None:
+                raise DomainValidationError(
+                    f"unknown replacement question version: {replacement_id}"
+                )
+            replacement_is_valid_history = replacement["status"] == "published" or (
+                replacement["status"] == "retired"
+                and replacement["retirement_reason"] == "superseded"
+            )
+            if (
+                replacement_id == version_id
+                or replacement["question_id"] != row["question_id"]
+                or int(replacement["version"]) <= int(row["version"])
+                or not replacement_is_valid_history
+            ):
+                raise DomainValidationError(
+                    "replacement must be a later valid version of the same question"
+                )
+            updated = conn.execute(
+                """
+                UPDATE question_versions SET
+                    retirement_reason = 'superseded',
+                    replacement_question_version_id = ?, updated_at = ?
+                WHERE id = ? AND status = 'retired' AND retirement_reason IS NULL
+                """,
+                (replacement_id, now, version_id),
+            )
+            if updated.rowcount != 1:
+                raise InvalidTransitionError("legacy retirement was already classified")
+            audit_note = f"classified_superseded_by:{replacement_id}"
+            if note.strip():
+                audit_note = f"{audit_note}\n{note.strip()}"
+            conn.execute(
+                """
+                INSERT INTO review_events (question_version_id, action, actor_id, note, created_at)
+                VALUES (?, 'retired', ?, ?, ?)
+                """,
+                (version_id, actor, audit_note, now),
             )
         return self.get_question_version(version_id)
 
@@ -536,16 +655,21 @@ class CatalogService:
             ).fetchone()
             if current is not None:
                 conn.execute(
-                    "UPDATE question_versions SET status = 'retired', updated_at = ? WHERE id = ?",
-                    (now, current["id"]),
+                    """
+                    UPDATE question_versions SET
+                        status = 'retired', retirement_reason = 'superseded',
+                        retired_at = ?, replacement_question_version_id = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (now, version_id, now, current["id"]),
                 )
                 conn.execute(
                     """
                     INSERT INTO review_events
                         (question_version_id, action, actor_id, note, created_at)
-                    VALUES (?, 'retired', ?, 'superseded by a newer version', ?)
+                    VALUES (?, 'retired', ?, ?, ?)
                     """,
-                    (current["id"], actor, now),
+                    (current["id"], actor, f"superseded_by:{version_id}", now),
                 )
             conn.execute(
                 """
@@ -621,6 +745,35 @@ class CatalogService:
             )
         else:
             result["review_binding_state"] = "unreviewed"
+        return result
+
+    def get_question_version_states(
+        self, version_ids: list[str] | tuple[str, ...] | set[str]
+    ) -> dict[str, dict[str, Any]]:
+        """Read retirement state for a set of immutable catalog versions."""
+        normalized = sorted({str(version_id).strip() for version_id in version_ids})
+        if any(not version_id for version_id in normalized):
+            raise DomainValidationError("question version id is required")
+        if not normalized:
+            return {}
+        result: dict[str, dict[str, Any]] = {}
+        with self.store.connect() as conn:
+            for offset in range(0, len(normalized), 500):
+                batch = normalized[offset : offset + 500]
+                placeholders = ",".join("?" for _ in batch)
+                rows = conn.execute(
+                    f"""
+                    SELECT id, status, retirement_reason, retired_at, updated_at,
+                           replacement_question_version_id
+                    FROM question_versions
+                    WHERE id IN ({placeholders})
+                    """,
+                    tuple(batch),
+                ).fetchall()
+                result.update({str(row["id"]): dict(row) for row in rows})
+        missing = set(normalized) - set(result)
+        if missing:
+            raise DomainValidationError(f"unknown question version: {sorted(missing)[0]}")
         return result
 
     def list_question_versions(self, *, status: str) -> list[dict[str, Any]]:

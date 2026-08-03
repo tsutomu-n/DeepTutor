@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "updated_at": "2026-08-03_13:36",
+  "updated_at": "2026-08-03_14:31",
   "timezone": "Asia/Tokyo",
   "status": "in_progress",
   "current_checkpoint": "CP-13",
@@ -25,7 +25,8 @@
     "npm基準が安定する限りBun移行はTJM本体より後に評価する",
     "既存pass_scoreは公式値へ推測移行せず利用者のpractice targetとして保全する",
     "TJM日本語化とDeepTutor全体の日本語化は分離し、今回の製品受入はTJM導線を対象にする",
-    "source-build Dockerを配備の正本とし、GHCR publishと本番配備は行わない"
+    "source-build Dockerを配備の正本とし、GHCR publishと本番配備は行わない",
+    "共有catalogと利用者別learning DBを跨ぐ廃止処理は単一transactionに見せかけず、各利用者操作の入口で単調に同期して永続化する"
   ],
   "invariants": [
     "LLMは正式正解、採点、公開、回答履歴を変更しない",
@@ -36,7 +37,11 @@
     "試験の問題数、分野名、制限時間をPythonまたはTypeScript定数へ固定しない",
     "レビュー済みrevisionと公開時のcurrent revisionがtransaction内で一致しなければ公開しない",
     "正式回答時間はサーバー時刻を正本としclient時間は診断値に限定する",
-    "同一idempotency keyの再送で回答イベント、採点、復習完了を二重適用しない"
+    "同一idempotency keyの再送で回答イベント、採点、復習完了を二重適用しない",
+    "復習attemptは開始時にlinkしたqueue行だけを完了し、後発行と既にdismiss済みの行を変更しない",
+    "superseded版の過去得点と開始済みattemptは有効だが、新規出題と復習から除外し新版へ自動移送しない",
+    "invalid_content版はraw履歴と保存得点を削除せず、正式採点表示、分析、新規回答から除外する",
+    "過去に保存した冪等responseも現在invalid_contentなら安全なprojectionへ再投影し、正式正解や旧eligible状態を復活させない"
   ],
   "planned_storage": {
     "engine": "SQLite",
@@ -407,7 +412,7 @@
           "cancel_voice_candidate",
           "submit_attempt"
         ],
-        "idempotency_replay": "stored response precedes mutable catalog, queue, deadline, and current-state checks; same key with another canonical payload fails 409",
+        "idempotency_replay": "command side effects and stored response remain immutable, but replay is projected through current expiry and catalog revocation state; same key with another canonical payload fails 409",
         "browser_retry": "first-party key and exact body persist in sessionStorage until completion and survive same-tab reload",
         "answer_change_policy": "practice and review lock after feedback reveal; exam remains editable until finalization",
         "voice_race_policy": "recording target is fixed at microphone start; navigation and screen mutations lock during voice processing; deadline closes microphone, speech, and confirmation dialogs",
@@ -417,6 +422,40 @@
         "independent_review_followup": "voice shutdown failure cannot block submit or expiry refresh; Strict Mode restores mounted state; navigation waits for item-open acknowledgement",
         "web_typecheck_and_targeted_lint": "passed",
         "ruff_and_diff_check": "passed"
+      },
+      "review_queue_retirement": {
+        "status": "completed",
+        "catalog_schema_version": 4,
+        "learning_schema_version": 3,
+        "queue_snapshot": "review_attempt_queue_links stores the exact queue row ids present at review-attempt start; submit updates linked pending rows only",
+        "two_tab_policy": "non-exclusive snapshots preserve the existing API; SQLite first-writer-wins resolution records one resolution_attempt_id without locking abandoned tabs",
+        "retirement_reasons": ["superseded", "invalid_content"],
+        "legacy_retirement_policy": "leave reason and retired_at null instead of guessing; reconcile as retired_unclassified and fail closed until a human explicitly supplies a valid later same-question replacement id",
+        "retirement_transition": "manual retirement is invalid_content; publishing a replacement records superseded and a later replacement id; legacy classification requires a later valid same-question replacement in both service and SQLite trigger; superseded may only escalate to invalid_content",
+        "cross_database_policy": "catalog is deployment-wide and learning DB is per-user, so every list, start, read, write, finalize, history, and analytics entry lazily persists monotonic disposition and queue dismissal",
+        "invalid_content_policy": "preserve answer events and stored raw score, reject new interaction, omit official answer fields, exclude invalid items from grading and analytics",
+        "superseded_policy": "started attempts remain gradeable and historical analytics remain valid; pending old-version review is dismissed without automatic transfer",
+        "idempotent_revocation_projection": "stored command effects and exact response remain unchanged for current or superseded content; answer, submit, and start replays redact only invalidated or unclassified grading fields and report current invalidation",
+        "admin_retirement_ui": "published content can be invalidated with a human note; unclassified legacy retirement can be classified only with an explicit valid replacement version id",
+        "invalid_score_ui": "final and history cards label retained scores as historical raw scores when content has been invalidated",
+        "targeted_tjm_api_tests": {"passed": 97, "warnings": 211},
+        "web_node_tests": {"passed": 389},
+        "web_typecheck_and_targeted_lint": "passed",
+        "ruff_and_diff_check": "passed"
+      },
+      "authorization_and_leakage": {
+        "status": "pending_remediation",
+        "confirmed_findings": [
+          "non-admin user path resolution can fall back to the admin PathService when resolution raises",
+          "parallel practice or finalized attempts can expose the same versions while an exam remains in progress",
+          "cookie-authenticated state-changing admin routes have no explicit CSRF or Origin validation"
+        ],
+        "next_order": [
+          "fail_closed_tjm_user_path_resolution",
+          "active_exam_parallel_attempt_lock",
+          "cross_route_admin_and_answer_leakage_negative_tests",
+          "csrf_origin_validation"
+        ]
       }
     }
   },
@@ -447,6 +486,8 @@
     }
   ],
   "residual_risks": [
+    "catalog retirement is reconciled into each per-user learning DB before that user's next TJM response, not atomically fanned out to every inactive user DB",
+    "TJM request-time user path resolution, parallel-attempt answer-oracle prevention, and cookie CSRF validation remain open CP-13 findings",
     "npm audit remains at high 3 and moderate 2; advisory reachability and fixes require CP-14 evidence",
     "Docker requirements installation does not consume uv.lock",
     "full mypy remains blocked by the baseline Python 3.11 and NumPy stub mismatch",

@@ -62,7 +62,7 @@ def test_catalog_store_initializes_only_catalog_schema(tmp_path: Path) -> None:
         "review_bindings",
         "import_batches",
     }
-    assert _migration_versions(db_path) == [1, 2, 3]
+    assert _migration_versions(db_path) == [1, 2, 3, 4]
 
 
 def test_learning_store_initializes_only_user_learning_schema(tmp_path: Path) -> None:
@@ -78,8 +78,9 @@ def test_learning_store_initializes_only_user_learning_schema(tmp_path: Path) ->
         "answer_events",
         "learning_commands",
         "review_queue",
+        "review_attempt_queue_links",
     }
-    assert _migration_versions(db_path) == [1, 2]
+    assert _migration_versions(db_path) == [1, 2, 3]
 
 
 def test_catalog_store_serializes_concurrent_initialization(tmp_path: Path) -> None:
@@ -94,7 +95,7 @@ def test_catalog_store_serializes_concurrent_initialization(tmp_path: Path) -> N
         stores = list(executor.map(initialize, range(16)))
 
     assert len(stores) == 16
-    assert _migration_versions(db_path) == [1, 2, 3]
+    assert _migration_versions(db_path) == [1, 2, 3, 4]
     assert "exam_definitions" in _table_names(db_path)
 
 
@@ -147,7 +148,7 @@ def test_catalog_v3_migrates_legacy_content_without_binding_old_review(tmp_path:
 
     migrated = CatalogStore(db_path)
 
-    assert _migration_versions(db_path) == [1, 2, 3]
+    assert _migration_versions(db_path) == [1, 2, 3, 4]
     with migrated.connect() as conn:
         current = conn.execute(
             "SELECT content_revision, content_hash FROM question_versions WHERE id = ?",
@@ -221,7 +222,7 @@ def test_learning_v2_preserves_client_metrics_without_inventing_server_time(
 
     migrated = LearningStore(db_path)
 
-    assert _migration_versions(db_path) == [1, 2]
+    assert _migration_versions(db_path) == [1, 2, 3]
     with migrated.connect() as conn:
         item = conn.execute(
             """
@@ -253,6 +254,172 @@ def test_learning_v2_preserves_client_metrics_without_inventing_server_time(
             conn.execute("UPDATE answer_events SET option_key = 'B' WHERE id = ?", (event_id,))
         with pytest.raises(sqlite3.IntegrityError, match="immutable"):
             conn.execute("DELETE FROM answer_events WHERE id = ?", (event_id,))
+
+
+def test_catalog_v4_does_not_guess_legacy_retirement_metadata(tmp_path: Path) -> None:
+    db_path = tmp_path / "legacy-retired-catalog.db"
+
+    class LegacyCatalogStore(CatalogStore):
+        migrations = CatalogStore.migrations[:3]
+
+    legacy = LegacyCatalogStore(db_path)
+    with legacy.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO exam_definitions (
+                id, title, duration_seconds, question_count, blueprint_json,
+                status, revision, created_by, created_at, updated_at
+            ) VALUES ('legacy-exam', 'Legacy', 60, 1, '{}', 'draft', 1,
+                      'admin', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO questions (id, exam_id, stable_id, created_at)
+            VALUES ('legacy-q1', 'legacy-exam', 'legacy-q1', '2026-01-01T00:00:00Z')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO question_versions (
+                id, question_id, version, stem, options_json, correct_option_key,
+                area, content_hash, status, created_by, created_at, updated_at, updated_by
+            ) VALUES ('legacy-qv-1', 'legacy-q1', 1, 'Legacy question',
+                      '[{"key":"A","text":"First"},{"key":"B","text":"Second"}]',
+                      'B', 'legacy', 'legacy-hash', 'retired', 'author',
+                      '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z', 'author')
+            """
+        )
+
+    migrated = CatalogStore(db_path)
+
+    with migrated.connect() as conn:
+        row = conn.execute(
+            """
+            SELECT retirement_reason, retired_at, replacement_question_version_id
+            FROM question_versions WHERE id = 'legacy-qv-1'
+            """
+        ).fetchone()
+        assert dict(row) == {
+            "retirement_reason": None,
+            "retired_at": None,
+            "replacement_question_version_id": None,
+        }
+
+
+def test_learning_v3_preserves_queue_and_adds_immutable_review_links(tmp_path: Path) -> None:
+    db_path = tmp_path / "legacy-review-queue.db"
+
+    class LegacyLearningStore(LearningStore):
+        migrations = LearningStore.migrations[:2]
+
+    legacy = LegacyLearningStore(db_path)
+    with legacy.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO attempts (
+                id, exam_id, mode, status, exam_snapshot_json, started_at
+            ) VALUES ('review-attempt', 'exam', 'review', 'in_progress', '{}',
+                      '2026-01-01T00:00:00Z')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO attempt_items (
+                attempt_id, position, question_version_id, area
+            ) VALUES ('review-attempt', 0, 'qv-1', 'area')
+            """
+        )
+        cursor = conn.execute(
+            """
+            INSERT INTO review_queue (
+                question_version_id, reason, priority, status, created_at
+            ) VALUES ('qv-1', 'incorrect', 100, 'pending', '2026-01-01T00:00:00Z')
+            """
+        )
+        queue_row_id = int(cursor.lastrowid)
+
+    migrated = LearningStore(db_path)
+
+    with migrated.connect() as conn:
+        item = conn.execute(
+            """
+            SELECT catalog_disposition, content_invalidated_at
+            FROM attempt_items WHERE attempt_id = 'review-attempt'
+            """
+        ).fetchone()
+        queue = conn.execute(
+            """
+            SELECT resolution_reason, resolution_attempt_id
+            FROM review_queue WHERE id = ?
+            """,
+            (queue_row_id,),
+        ).fetchone()
+        assert dict(item) == {
+            "catalog_disposition": "unchecked",
+            "content_invalidated_at": None,
+        }
+        assert dict(queue) == {"resolution_reason": None, "resolution_attempt_id": None}
+        assert conn.execute("SELECT COUNT(*) FROM review_attempt_queue_links").fetchone()[0] == 0
+        conn.execute(
+            """
+            INSERT INTO review_attempt_queue_links (attempt_id, queue_row_id, linked_at)
+            VALUES ('review-attempt', ?, '2026-01-01T00:00:01Z')
+            """,
+            (queue_row_id,),
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            conn.execute(
+                "UPDATE review_attempt_queue_links SET linked_at = 'later' WHERE queue_row_id = ?",
+                (queue_row_id,),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            conn.execute(
+                "DELETE FROM review_attempt_queue_links WHERE queue_row_id = ?",
+                (queue_row_id,),
+            )
+        unlinked = conn.execute(
+            """
+            INSERT INTO review_queue (
+                question_version_id, reason, priority, status, created_at
+            ) VALUES ('qv-1', 'late', 50, 'pending', '2026-01-01T00:00:02Z')
+            """
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="resolution transition"):
+            conn.execute(
+                """
+                UPDATE review_queue SET
+                    status = 'completed', resolved_at = '2026-01-01T00:00:03Z',
+                    resolution_reason = 'review_completed',
+                    resolution_attempt_id = 'review-attempt'
+                WHERE id = ?
+                """,
+                (unlinked.lastrowid,),
+            )
+        other_queue = conn.execute(
+            """
+            INSERT INTO review_queue (
+                question_version_id, reason, priority, status, created_at
+            ) VALUES ('qv-2', 'incorrect', 100, 'pending', '2026-01-01T00:00:02Z')
+            """
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="match an active review item"):
+            conn.execute(
+                """
+                INSERT INTO review_attempt_queue_links (attempt_id, queue_row_id, linked_at)
+                VALUES ('review-attempt', ?, '2026-01-01T00:00:03Z')
+                """,
+                (other_queue.lastrowid,),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="initial catalog disposition"):
+            conn.execute(
+                """
+                INSERT INTO attempt_items (
+                    attempt_id, position, question_version_id, area,
+                    catalog_disposition
+                ) VALUES ('review-attempt', 1, 'qv-2', 'area', 'invalid_content')
+                """
+            )
 
 
 def test_tjm_stores_enable_foreign_keys_on_every_connection(tmp_path: Path) -> None:

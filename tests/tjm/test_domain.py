@@ -493,13 +493,164 @@ def test_correction_creates_new_version_and_retires_previous_publication(tmp_pat
     catalog.review_question_version(second["id"], actor_id="reviewer-2")
     catalog.publish_question_version(second["id"], actor_id="admin-1")
 
-    assert catalog.get_question_version(first["id"])["status"] == "retired"
-    assert catalog.get_question_version(first["id"])["correct_option_key"] == "B"
+    retired = catalog.get_question_version(first["id"])
+    assert retired["status"] == "retired"
+    assert retired["correct_option_key"] == "B"
+    assert retired["retirement_reason"] == "superseded"
+    assert retired["replacement_question_version_id"] == second["id"]
+    assert retired["retired_at"]
     assert catalog.get_question_version(second["id"])["status"] == "published"
     assert catalog.get_question_version(second["id"])["correct_option_key"] == "C"
 
     with pytest.raises(ImmutableVersionError):
         catalog.replace_draft(second["id"], _question(correct="A"), actor_id="admin-1")
+
+
+def test_manual_retirement_is_explicitly_invalid_content_and_audited(tmp_path: Path) -> None:
+    catalog = _catalog(tmp_path)
+    catalog.create_exam(_exam(), actor_id="admin-1")
+    version = catalog.create_question_version(_question(), actor_id="author")
+    catalog.review_question_version(version["id"], actor_id="reviewer")
+    catalog.publish_question_version(version["id"], actor_id="publisher")
+
+    with pytest.raises(DomainValidationError, match="invalid_content"):
+        catalog.retire_question_version(version["id"], actor_id="admin-1", reason="superseded")
+
+    retired = catalog.retire_question_version(
+        version["id"],
+        actor_id="admin-1",
+        reason="invalid_content",
+        note="The source proves that the keyed answer is invalid.",
+    )
+
+    assert retired["status"] == "retired"
+    assert retired["retirement_reason"] == "invalid_content"
+    assert retired["replacement_question_version_id"] is None
+    assert retired["retired_at"]
+    with catalog.store.connect() as conn:
+        event = conn.execute(
+            """
+            SELECT actor_id, note FROM review_events
+            WHERE question_version_id = ? AND action = 'retired'
+            ORDER BY id DESC LIMIT 1
+            """,
+            (version["id"],),
+        ).fetchone()
+        assert dict(event) == {
+            "actor_id": "admin-1",
+            "note": "The source proves that the keyed answer is invalid.",
+        }
+        with pytest.raises(sqlite3.IntegrityError, match="invalid retirement transition"):
+            conn.execute(
+                """
+                UPDATE question_versions SET retirement_reason = 'superseded'
+                WHERE id = ?
+                """,
+                (version["id"],),
+            )
+
+
+def test_superseded_retirement_can_only_escalate_to_invalid_content(tmp_path: Path) -> None:
+    catalog = _catalog(tmp_path)
+    catalog.create_exam(_exam(), actor_id="admin")
+    first = catalog.create_question_version(_question(), actor_id="author")
+    catalog.review_question_version(first["id"], actor_id="reviewer")
+    catalog.publish_question_version(first["id"], actor_id="publisher")
+    replacement = catalog.create_question_version(
+        _question(stem="Replacement question", correct="C"), actor_id="author"
+    )
+    catalog.review_question_version(replacement["id"], actor_id="reviewer")
+    catalog.publish_question_version(replacement["id"], actor_id="publisher")
+
+    escalated = catalog.retire_question_version(
+        first["id"],
+        actor_id="admin",
+        reason="invalid_content",
+        note="The historical item was later proven invalid.",
+    )
+
+    assert escalated["retirement_reason"] == "invalid_content"
+    assert escalated["replacement_question_version_id"] == replacement["id"]
+    with catalog.store.connect() as conn:
+        with pytest.raises(sqlite3.IntegrityError, match="invalid retirement transition"):
+            conn.execute(
+                """
+                UPDATE question_versions SET retirement_reason = 'superseded'
+                WHERE id = ?
+                """,
+                (first["id"],),
+            )
+
+
+def test_legacy_retirement_can_be_explicitly_classified_as_superseded(tmp_path: Path) -> None:
+    db_path = tmp_path / "legacy-retirement.db"
+
+    class LegacyCatalogStore(CatalogStore):
+        migrations = CatalogStore.migrations[:3]
+
+    legacy = CatalogService(LegacyCatalogStore(db_path))
+    legacy.create_exam(_exam(), actor_id="admin")
+    first = legacy.create_question_version(_question(), actor_id="author")
+    legacy.review_question_version(first["id"], actor_id="reviewer")
+    legacy.publish_question_version(first["id"], actor_id="publisher")
+    replacement = legacy.create_question_version(
+        _question(stem="Historical replacement", correct="C"), actor_id="author"
+    )
+    legacy.review_question_version(replacement["id"], actor_id="reviewer")
+    with legacy.store.connect() as conn:
+        conn.execute(
+            "UPDATE question_versions SET status = 'retired' WHERE id = ?",
+            (first["id"],),
+        )
+        conn.execute(
+            "UPDATE question_versions SET status = 'published' WHERE id = ?",
+            (replacement["id"],),
+        )
+
+    catalog = CatalogService(CatalogStore(db_path))
+    assert catalog.get_question_version(first["id"])["retirement_reason"] is None
+    unverified_draft = catalog.create_question_version(
+        _question(stem="Unpublished later draft", correct="A"), actor_id="author"
+    )
+    with catalog.store.connect() as conn:
+        with pytest.raises(sqlite3.IntegrityError, match="invalid retirement transition"):
+            conn.execute(
+                """
+                UPDATE question_versions SET
+                    retirement_reason = 'superseded',
+                    replacement_question_version_id = ?
+                WHERE id = ?
+                """,
+                (unverified_draft["id"], first["id"]),
+            )
+
+    classified = catalog.classify_legacy_retirement(
+        first["id"],
+        replacement_version_id=replacement["id"],
+        actor_id="admin",
+        note="Verified from the historical publication log.",
+    )
+
+    assert classified["retirement_reason"] == "superseded"
+    assert classified["replacement_question_version_id"] == replacement["id"]
+    with catalog.store.connect() as conn:
+        event = conn.execute(
+            """
+            SELECT actor_id, note FROM review_events
+            WHERE question_version_id = ? AND action = 'retired'
+            ORDER BY id DESC LIMIT 1
+            """,
+            (first["id"],),
+        ).fetchone()
+        assert event["actor_id"] == "admin"
+        assert event["note"].startswith(f"classified_superseded_by:{replacement['id']}")
+
+    with pytest.raises(InvalidTransitionError, match="already classified"):
+        catalog.classify_legacy_retirement(
+            first["id"],
+            replacement_version_id=replacement["id"],
+            actor_id="admin",
+        )
 
 
 def test_deterministic_grading_uses_only_answer_key_and_confirmed_responses() -> None:

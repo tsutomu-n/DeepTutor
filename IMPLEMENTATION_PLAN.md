@@ -1,6 +1,6 @@
 # TJM 実装計画
 
-更新: 2026-08-03_13:36 (Asia/Tokyo)
+更新: 2026-08-03_14:31 (Asia/Tokyo)
 
 ## 1. 状態
 
@@ -85,6 +85,9 @@ DeepTutor の単一フォークに、試験固有の問題数、分野名、制�
 - `attempt_items`: 出題順、固定された問題版、表示・回答時刻
 - `answer_events`: 選択、自信度、ヒント、音声候補、音声確認、変更履歴
 - `review_queue`: 復習理由、優先度、次回予定、解消状態
+- `review_attempt_queue_links`: 復習attempt開始時に対象だったqueue行IDの不変snapshot
+
+共有catalogと利用者別learning DBは別SQLiteであり、一つのtransactionでは廃止状態を全利用者へ反映できない。この制約を隠さず、各利用者のlist/start/read/write/finalize/history/analytics入口でcatalog状態を照合し、問題版の扱いとpending復習のdismissを利用者DBへ単調に永続化する。
 
 ### 5.2 API
 
@@ -94,7 +97,7 @@ FastAPIへ `/api/v1/tjm` を追加する。通常利用APIは既存`require_auth
 
 - 試験定義: `GET/POST/PATCH /exams`
 - 取り込み: `POST /imports`、`GET /imports/{id}`
-- 人間レビュー: `GET /review/questions`、`PATCH /review/questions/{version_id}`、`POST /review/questions/{version_id}/publish|reject|retire`
+- 人間レビュー: `GET /review/questions`、`PATCH /review/questions/{version_id}`、`POST /review/questions/{version_id}/publish|reject|retire|classify-retirement`。手動retireは`reason=invalid_content`を必須とし、通常の`superseded`は置換版のpublish transactionだけが記録する。移行前から存在する理由不明のretired版だけは、人間が同一問題の後続版IDを指定した時に明示分類できる。
 - 演習・試験: `POST /attempts`、`GET /attempts/{id}`、`POST /attempts/{id}/answers`、`POST /attempts/{id}/submit`
 - ヒント: `POST /attempts/{id}/items/{position}/hint`
 - 音声候補記録: `POST /attempts/{id}/items/{position}/voice-candidate`
@@ -459,9 +462,21 @@ Webは正式正解をローカル判定せず、practiceの確定応答または
 | Web回帰 | `npm run test:node`; `npx tsc --noEmit`; 対象`eslint` | 387 passed、型検査・lint成功。transport、再読込ledger、操作可否のbehavior testを含む |
 | 独立レビュー追補 | 音声停止失敗、React Strict Mode、open中の問題移動 | mic停止失敗時も提出・期限GETを継続し、hook mount状態をsetupごとに復帰。server open応答までは前後・解答一覧・提出移動を禁止 |
 | Learning静的検査 | 対象`ruff check`、`ruff format --check`、`git diff --check` | 成功 |
+| Catalog/Learning migration | Catalog v4、Learning v3 | `retirement_reason`、`retired_at`、置換版ID、itemのcatalog disposition、queue解消理由・主体、`review_attempt_queue_links`を追加。legacy値は推測せず`NULL`/`unchecked`を保持 |
+| 復習snapshot | 同一問題の開始時理由、開始後理由、二タブ並行開始・提出、途中dismiss、submit再送 | 各attemptは開始時に存在した行IDだけをlink。最初の提出だけがpending行へ解消attemptを記録し、後発行とterminal行を変更しない。放置tabを永久lockする排他的claimは導入しない |
+| 廃止理由 | 手動`invalid_content`、置換publishの`superseded`、後日の誤問判明 | `superseded`は開始済みattemptと過去分析を有効のまま、新規出題・復習だけを停止。`superseded -> invalid_content`以外の逆向き変更をSQLiteで拒否 |
+| 利用者DB整合 | catalogは共有、learning DBは利用者別 | 全利用者DBをretire transactionで原子的に更新できない事実を明記し、各利用者操作入口で単調な遅延同期を実施。pending旧版queueを理由付きdismissへ永続化 |
+| invalid content | 回答済み履歴、開始済みattempt、分析、Web操作 | answer eventと保存済みraw得点を保持し、新規回答を409、正式正解fieldを非表示、該当itemを採点・分析から除外。画面・音声入力も無効化 |
+| 冪等再送の失効反映 | invalid化前の回答・提出・開始responseを同じkeyで再送 | command副作用と保存responseは不変とし、通常・`superseded`時はexact responseを返す。`invalid_content`/理由不明廃止だけ失効fieldを安全に再投影し、正式正解・解説・旧eligible状態を再露出しない |
+| 管理画面の廃止操作 | published版の`invalid_content`化、legacy理由不明版の明示分類 | 公開問題を画面から理由付きで無効化できる。理由不明の旧retired版は、同一問題の有効かつ後の版IDを人間が指定した時だけ`superseded`へ分類し、監査eventを追記。逆向き・draft参照はserviceとSQLite triggerの双方で拒否 |
+| 無効得点の表示 | 最終結果、Recent attempts | 保存済みraw得点は保持するが「Historical raw score」「Content invalidated」と明示し、現在有効な正式結果に見せない |
+| Review/retirement回帰 | `pytest -q tests/tjm tests/api/test_tjm_router.py` | 97 passed、211 warnings。migration、二タブ並行、後発理由、途中dismiss、legacy明示分類、冪等再送の正解再露出防止、raw履歴保持、invalid除外を含む |
+| Review/retirement Web回帰 | `npm run test:node`; `npx tsc --noEmit`; 対象`eslint` | 389 passed、型検査・lint成功。無効問題の画面・音声回答停止、raw得点警告、管理画面の無効化・旧廃止分類を含む |
 
 ## 17. 既存リスクと今回の扱い
 
+- catalogは共有DB、learningは利用者別DBであるため、問題廃止と全利用者queue取消を単一transactionで即時反映する構造ではない。現在の契約は「各利用者の次のTJM操作より前に必ず同期し、その応答では旧版を有効扱いしない」である。管理操作直後に全利用者DBを物理更新する要件へ変える場合は、DB topologyまたは調整jobの別設計を停止条件として扱う。
+- 認可の独立監査で、非adminの利用者path解決失敗時にadmin用`PathService`へfallbackする経路、同一利用者が並行practice/提出済みattemptを正解oracleとして使える経路、cookie認証の状態変更routeにCSRF検査がない点を確認した。これは停止条件ではなくCP-13の次の修正単位とし、fail-closed path解決、active exam lock、認可・漏洩negative testの順で閉じる。
 - npm auditは現在high 3件、moderate 2件、critical 0件である。自動修正が破壊的downgradeになるという過去の記録は今回の再確認で裏付け切れなかったため撤回する。advisoryごとの導入差分、production到達性、修正可否はCP-14で確定する。
 - CP-04時点ではPython lockfileがなく範囲依存の最新値を解決した。現在は`uv.lock`を追加したが、Dockerのrequirements経路はまだ同一lockを消費しない。
 - Dockerも `pip install -r requirements.txt` で当日最新を解決し、Python 3.11環境ではローカルPython 3.12環境と一部の解決版が異なる。production build成功は確認したが、将来の同一解決を保証する証拠ではない。

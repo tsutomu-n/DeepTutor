@@ -15,6 +15,7 @@ test('answers stay disabled until the server records item presentation', () => {
       confirmed: false,
       serverOpened: false,
       secondsLeft: null,
+      gradingStatus: 'eligible',
     }),
     false
   )
@@ -29,6 +30,7 @@ test('practice and review answers lock after reveal while exam answers remain ed
         confirmed: true,
         serverOpened: true,
         secondsLeft: null,
+        gradingStatus: 'eligible',
       }),
       false
     )
@@ -40,6 +42,7 @@ test('practice and review answers lock after reveal while exam answers remain ed
       confirmed: true,
       serverOpened: true,
       secondsLeft: 10,
+      gradingStatus: 'eligible',
     }),
     true
   )
@@ -53,12 +56,27 @@ test('deadline zero disables input and requests authoritative final state', () =
       confirmed: false,
       serverOpened: true,
       secondsLeft: 0,
+      gradingStatus: 'eligible',
     }),
     false
   )
   assert.equal(shouldRefreshExpiredTjmAttempt('in_progress', 'exam', 0), true)
   assert.equal(shouldRefreshExpiredTjmAttempt('submitted', 'exam', 0), false)
   assert.equal(shouldRefreshExpiredTjmAttempt('in_progress', 'practice', 0), false)
+})
+
+test('content-invalidated questions cannot accept screen or voice answers', () => {
+  assert.equal(
+    canAnswerTjmItem({
+      status: 'in_progress',
+      mode: 'exam',
+      confirmed: false,
+      serverOpened: true,
+      secondsLeft: 30,
+      gradingStatus: 'content_invalidated',
+    }),
+    false
+  )
 })
 
 test('navigation waits for server open acknowledgement and voice actions', () => {

@@ -123,9 +123,81 @@ def test_admin_import_review_publish_and_retire_workflow(admin_client: TestClien
     )
     assert edit_published.status_code == 409
 
-    retired = admin_client.post(f"/api/v1/tjm/review/questions/{version_id}/retire")
+    missing_reason = admin_client.post(f"/api/v1/tjm/review/questions/{version_id}/retire")
+    assert missing_reason.status_code == 422
+    inferred_supersession = admin_client.post(
+        f"/api/v1/tjm/review/questions/{version_id}/retire",
+        json={"reason": "superseded", "note": "No replacement was published."},
+    )
+    assert inferred_supersession.status_code == 422
+    retired = admin_client.post(
+        f"/api/v1/tjm/review/questions/{version_id}/retire",
+        json={"reason": "invalid_content", "note": "The keyed answer is invalid."},
+    )
     assert retired.status_code == 200
     assert retired.json()["status"] == "retired"
+    assert retired.json()["retirement_reason"] == "invalid_content"
+
+
+def test_admin_legacy_retirement_classification_requires_explicit_replacement(
+    admin_client: TestClient,
+    catalog: CatalogService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, str] = {}
+
+    def classify(
+        version_id: str,
+        *,
+        replacement_version_id: str,
+        actor_id: str,
+        note: str,
+    ) -> dict:
+        captured.update(
+            version_id=version_id,
+            replacement_version_id=replacement_version_id,
+            actor_id=actor_id,
+            note=note,
+        )
+        return {
+            "id": version_id,
+            "status": "retired",
+            "retirement_reason": "superseded",
+            "replacement_question_version_id": replacement_version_id,
+        }
+
+    monkeypatch.setattr(catalog, "classify_legacy_retirement", classify)
+
+    missing = admin_client.post(
+        "/api/v1/tjm/review/questions/legacy-v1/classify-retirement",
+        json={"reason": "superseded", "note": "verified"},
+    )
+    assert missing.status_code == 422
+    invalid_reason = admin_client.post(
+        "/api/v1/tjm/review/questions/legacy-v1/classify-retirement",
+        json={
+            "reason": "invalid_content",
+            "replacement_question_version_id": "replacement-v2",
+        },
+    )
+    assert invalid_reason.status_code == 422
+
+    response = admin_client.post(
+        "/api/v1/tjm/review/questions/legacy-v1/classify-retirement",
+        json={
+            "reason": "superseded",
+            "replacement_question_version_id": "replacement-v2",
+            "note": "verified from the publication ledger",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["retirement_reason"] == "superseded"
+    assert captured == {
+        "version_id": "legacy-v1",
+        "replacement_version_id": "replacement-v2",
+        "actor_id": "admin-1",
+        "note": "verified from the publication ledger",
+    }
 
 
 def test_admin_must_rereview_current_revision_after_edit(admin_client: TestClient) -> None:
@@ -487,6 +559,44 @@ def test_voice_answer_api_saves_only_after_candidate_confirmation(
         json={"confidence": 80, "elapsed_ms": 950},
     )
     assert repeated.status_code == 409
+
+
+def test_invalidated_question_rejects_answer_and_never_returns_official_grade(
+    learner_client: TestClient, catalog: CatalogService
+) -> None:
+    started = learner_client.post(
+        "/api/v1/tjm/attempts", json={"exam_id": "exam-learn", "mode": "exam"}
+    ).json()
+    version_id = started["items"][0]["question_version_id"]
+    assert (
+        learner_client.post(f"/api/v1/tjm/attempts/{started['id']}/items/0/open").status_code == 200
+    )
+    catalog.retire_question_version(
+        version_id,
+        actor_id="admin-1",
+        reason="invalid_content",
+        note="Fixture invalidation.",
+    )
+
+    answer = learner_client.post(
+        f"/api/v1/tjm/attempts/{started['id']}/answers",
+        json={
+            "position": 0,
+            "selected_option_key": "B",
+            "confidence": 80,
+            "elapsed_ms": 900,
+            "confirmed": True,
+        },
+    )
+    assert answer.status_code == 409
+
+    submitted = learner_client.post(f"/api/v1/tjm/attempts/{started['id']}/submit")
+    assert submitted.status_code == 200
+    assert submitted.json()["total_count"] == 0
+    invalid_item = submitted.json()["items"][0]
+    assert invalid_item["grading_status"] == "content_invalidated"
+    assert "correct_option_key" not in invalid_item
+    assert "is_correct" not in invalid_item
 
 
 def test_review_queue_review_attempt_and_analytics_api(learner_client: TestClient) -> None:

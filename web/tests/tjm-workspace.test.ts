@@ -20,6 +20,9 @@ test("TJM workspace exposes every required user and human-review surface", () =>
     "Human review queue",
     "Mark reviewed",
     "Publish",
+    "Invalidate content",
+    "Historical raw score",
+    "Content invalidated",
   ]) {
     assert.match(workspace, new RegExp(contract));
   }

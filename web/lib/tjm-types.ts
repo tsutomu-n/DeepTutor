@@ -61,6 +61,14 @@ export interface TjmAttemptItemBase {
   server_elapsed_ms: number | null
   client_active_elapsed_ms: number | null
   hint_count: number
+  catalog_disposition:
+    | 'unchecked'
+    | 'current'
+    | 'superseded'
+    | 'invalid_content'
+    | 'retired_unclassified'
+  content_invalidated_at: string | null
+  grading_status: 'eligible' | 'content_invalidated'
 }
 
 export interface TjmGradedFields {
@@ -83,6 +91,7 @@ export interface TjmAttempt {
   correct_count: number | null
   total_count: number | null
   answered_count: number
+  content_invalidated_count: number
   items: TjmAttemptItem[]
 }
 
@@ -104,6 +113,9 @@ export interface TjmQuestionVersion {
   created_by: string
   created_at: string
   updated_at: string
+  retirement_reason: 'superseded' | 'invalid_content' | null
+  retired_at: string | null
+  replacement_question_version_id: string | null
   reviewed_by: string | null
   reviewed_revision: number | null
   review_binding_state: 'current' | 'stale' | 'legacy_unverified' | 'unreviewed'
