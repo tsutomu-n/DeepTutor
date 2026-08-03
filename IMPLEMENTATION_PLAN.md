@@ -1,6 +1,6 @@
 # TJM 実装計画
 
-更新: 2026-08-03_13:27 (Asia/Tokyo)
+更新: 2026-08-03_13:36 (Asia/Tokyo)
 
 ## 1. 状態
 
@@ -456,7 +456,8 @@ Webは正式正解をローカル判定せず、practiceの確定応答または
 | 音声・期限競合 | 録音開始時attempt/position ref、期限0 GET polling | STT結果を録音開始問題へ固定し、期限時にmic/TTSと確認modalを閉じる。open/command 409はGETで最終状態を回復 |
 | Learning対象検証 | `pytest -q tests/tjm/test_storage.py tests/tjm/test_attempts.py tests/tjm/test_review_analytics.py tests/api/test_tjm_router.py` | 49 passed、211 warnings。期限ちょうど、並行GET/submit、response loss replay、service再起動、開始前提変化を含む |
 | TJM全体回帰 | `pytest -q tests/tjm tests/api/test_tjm_router.py` | 83 passed、211 warnings |
-| Web回帰 | `npm run test:node`; `npx tsc --noEmit`; 対象`eslint` | 386 passed、型検査・lint成功。transport、再読込ledger、操作可否のbehavior testを含む |
+| Web回帰 | `npm run test:node`; `npx tsc --noEmit`; 対象`eslint` | 387 passed、型検査・lint成功。transport、再読込ledger、操作可否のbehavior testを含む |
+| 独立レビュー追補 | 音声停止失敗、React Strict Mode、open中の問題移動 | mic停止失敗時も提出・期限GETを継続し、hook mount状態をsetupごとに復帰。server open応答までは前後・解答一覧・提出移動を禁止 |
 | Learning静的検査 | 対象`ruff check`、`ruff format --check`、`git diff --check` | 成功 |
 
 ## 17. 既存リスクと今回の扱い

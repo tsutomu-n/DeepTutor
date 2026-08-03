@@ -22,3 +22,11 @@ export function shouldRefreshExpiredTjmAttempt(
 ): boolean {
   return status === 'in_progress' && mode === 'exam' && secondsLeft === 0
 }
+
+export function canNavigateTjmAttempt(
+  status: TjmAttemptStatus,
+  serverOpened: boolean,
+  interactionBusy: boolean
+): boolean {
+  return !interactionBusy && (status !== 'in_progress' || serverOpened)
+}

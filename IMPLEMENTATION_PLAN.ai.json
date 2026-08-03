@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "updated_at": "2026-08-03_13:27",
+  "updated_at": "2026-08-03_13:36",
   "timezone": "Asia/Tokyo",
   "status": "in_progress",
   "current_checkpoint": "CP-13",
@@ -413,7 +413,8 @@
         "voice_race_policy": "recording target is fixed at microphone start; navigation and screen mutations lock during voice processing; deadline closes microphone, speech, and confirmation dialogs",
         "targeted_tests": {"passed": 49, "warnings": 211},
         "related_tjm_api_tests": {"passed": 83, "warnings": 211},
-        "web_node_tests": {"passed": 386},
+        "web_node_tests": {"passed": 387},
+        "independent_review_followup": "voice shutdown failure cannot block submit or expiry refresh; Strict Mode restores mounted state; navigation waits for item-open acknowledgement",
         "web_typecheck_and_targeted_lint": "passed",
         "ruff_and_diff_check": "passed"
       }

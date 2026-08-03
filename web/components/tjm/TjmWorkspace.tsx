@@ -38,6 +38,7 @@ import { fetchAuthStatus } from '@/lib/auth'
 import { adminReviewActions, selectAdminReviewQuestions } from '@/lib/tjm-admin'
 import {
   canAnswerTjmItem,
+  canNavigateTjmAttempt,
   shouldRefreshExpiredTjmAttempt,
 } from '@/lib/tjm-attempt-state'
 import {
@@ -373,6 +374,11 @@ function AttemptDesk({
     voice.state !== 'idle' ||
     voiceCandidate !== null ||
     submitOpen
+  const navigationLocked = !canNavigateTjmAttempt(
+    attempt.status,
+    serverOpened,
+    interactionBusy
+  )
 
   useEffect(() => {
     setPosition(current => Math.min(current, Math.max(0, attempt.items.length - 1)))
@@ -437,7 +443,7 @@ function AttemptDesk({
   useEffect(() => {
     setVoiceCandidate(null)
     voiceTargetRef.current = null
-    void stopListening()
+    void stopListening().catch(reason => setError(messageOf(reason)))
   }, [position, stopListening])
 
   useEffect(() => {
@@ -446,7 +452,7 @@ function AttemptDesk({
     voiceTargetRef.current = null
     setVoiceCandidate(null)
     setSubmitOpen(false)
-    void stopListening()
+    void stopListening().catch(reason => setError(messageOf(reason)))
     stopSpeaking()
   }, [commandLedger, finalized, stopListening, stopSpeaking])
 
@@ -474,7 +480,13 @@ function AttemptDesk({
       voiceTargetRef.current = null
       setVoiceCandidate(null)
       setSubmitOpen(false)
-      await stopListening()
+      try {
+        await stopListening()
+      } catch (reason) {
+        if (active) {
+          setError(`Microphone shutdown failed; deadline finalization continued. ${messageOf(reason)}`)
+        }
+      }
       stopSpeaking()
       try {
         const updated = await getTjmAttempt(attempt.id)
@@ -514,7 +526,7 @@ function AttemptDesk({
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null
       if (target?.closest('input, textarea, select, [contenteditable=true]')) return
-      if (interactionBusy) return
+      if (navigationLocked) return
       const choiceIndex = Number(event.key) - 1
       if (canAnswer && Number.isInteger(choiceIndex) && item?.choices[choiceIndex]) {
         commandLedger.abandon(answerScope)
@@ -531,8 +543,8 @@ function AttemptDesk({
     attempt.items.length,
     canAnswer,
     commandLedger,
-    interactionBusy,
     item,
+    navigationLocked,
     position,
   ])
 
@@ -567,7 +579,11 @@ function AttemptDesk({
   const toggleVoiceCapture = async () => {
     if (voice.state === 'listening' || voice.state === 'speech') {
       voiceTargetRef.current = null
-      await voice.stopListening()
+      try {
+        await voice.stopListening()
+      } catch (reason) {
+        setError(messageOf(reason))
+      }
       return
     }
     voiceTargetRef.current = { attemptId: attempt.id, position }
@@ -633,7 +649,11 @@ function AttemptDesk({
     const scope = `submit:${attempt.id}`
     const command = commandLedger.begin(scope, () => ({}))
     try {
-      await voice.stopListening()
+      try {
+        await voice.stopListening()
+      } catch (reason) {
+        setError(`Microphone shutdown failed; submission continued. ${messageOf(reason)}`)
+      }
       voice.stopSpeaking()
       const result = await submitTjmAttempt(attempt.id, command.key)
       applyAttempt(result)
@@ -976,7 +996,7 @@ function AttemptDesk({
             <Button
               type="button"
               variant="ghost"
-              disabled={position === 0 || interactionBusy}
+              disabled={position === 0 || navigationLocked}
               icon={<ChevronLeft size={15} />}
               onClick={() => setPosition(value => value - 1)}
             >
@@ -986,7 +1006,7 @@ function AttemptDesk({
               <Button
                 type="button"
                 variant="secondary"
-                disabled={interactionBusy}
+                disabled={navigationLocked}
                 icon={<ChevronRight size={15} />}
                 onClick={() => setPosition(value => value + 1)}
               >
@@ -1000,7 +1020,7 @@ function AttemptDesk({
               <Button
                 type="button"
                 variant="secondary"
-                disabled={deadlineReached || interactionBusy}
+                disabled={deadlineReached || navigationLocked}
                 icon={<FileCheck2 size={15} />}
                 onClick={() => setSubmitOpen(true)}
               >
@@ -1032,7 +1052,7 @@ function AttemptDesk({
               <button
                 key={entry.position}
                 type="button"
-                disabled={interactionBusy}
+                disabled={navigationLocked}
                 onClick={() => setPosition(entry.position)}
                 aria-label={`Question ${entry.position + 1}${entry.confirmed_option_key ? ', answered' : ''}`}
                 className={`aspect-square rounded-lg border font-mono text-xs font-semibold transition ${
@@ -1058,7 +1078,7 @@ function AttemptDesk({
           {!finalized ? (
             <button
               type="button"
-              disabled={interactionBusy}
+              disabled={navigationLocked}
               onClick={onExit}
               className="mt-4 text-xs text-[var(--muted-foreground)] underline-offset-4 hover:text-[var(--foreground)] hover:underline"
             >

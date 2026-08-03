@@ -187,6 +187,7 @@ export function useTjmVoice(onTranscript: (text: string) => Promise<void> | void
   )
 
   useEffect(() => {
+    mountedRef.current = true
     return () => {
       mountedRef.current = false
       cleanupAudio()
