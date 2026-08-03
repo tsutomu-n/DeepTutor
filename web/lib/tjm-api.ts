@@ -58,6 +58,21 @@ function jsonInit(method: string, body?: unknown): RequestInit {
   }
 }
 
+export function tjmCommandInit(
+  method: string,
+  body: unknown,
+  idempotencyKey: string
+): RequestInit {
+  return {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      'Idempotency-Key': idempotencyKey,
+    },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  }
+}
+
 export async function listTjmExams(): Promise<TjmExam[]> {
   return (await requestJson<{ exams: TjmExam[] }>('/exams')).exams
 }
@@ -125,11 +140,12 @@ export function retireTjmQuestion(versionId: string): Promise<TjmQuestionVersion
 
 export async function startTjmAttempt(
   examId: string,
-  mode: Extract<TjmAttemptMode, 'practice' | 'exam'>
+  mode: Extract<TjmAttemptMode, 'practice' | 'exam'>,
+  idempotencyKey: string
 ): Promise<TjmAttempt> {
   const attempt = await requestJson<TjmAttempt>(
     '/attempts',
-    jsonInit('POST', { exam_id: examId, mode })
+    tjmCommandInit('POST', { exam_id: examId, mode }, idempotencyKey)
   )
   return normalizeAttemptForClient(attempt)
 }
@@ -137,6 +153,16 @@ export async function startTjmAttempt(
 export async function getTjmAttempt(attemptId: string): Promise<TjmAttempt> {
   return normalizeAttemptForClient(
     await requestJson<TjmAttempt>(`/attempts/${encodeURIComponent(attemptId)}`)
+  )
+}
+
+export function openTjmAttemptItem(
+  attemptId: string,
+  position: number
+): Promise<TjmAttemptItem> {
+  return requestJson(
+    `/attempts/${encodeURIComponent(attemptId)}/items/${position}/open`,
+    jsonInit('POST')
   )
 }
 
@@ -149,19 +175,24 @@ export function recordTjmAnswer(
     elapsed_ms: number
     confirmed: boolean
     client_created_at?: string
-  }
+  },
+  idempotencyKey: string
 ): Promise<TjmAttemptItem> {
-  return requestJson(`/attempts/${encodeURIComponent(attemptId)}/answers`, jsonInit('POST', input))
+  return requestJson(
+    `/attempts/${encodeURIComponent(attemptId)}/answers`,
+    tjmCommandInit('POST', input, idempotencyKey)
+  )
 }
 
 export function requestTjmHint(
   attemptId: string,
   position: number,
-  elapsedMs: number
+  elapsedMs: number,
+  idempotencyKey: string
 ): Promise<{ hint: string; hint_number: number }> {
   return requestJson(
     `/attempts/${encodeURIComponent(attemptId)}/items/${position}/hint`,
-    jsonInit('POST', { elapsed_ms: elapsedMs })
+    tjmCommandInit('POST', { elapsed_ms: elapsedMs }, idempotencyKey)
   )
 }
 
@@ -169,11 +200,12 @@ export function recordTjmVoiceCandidate(
   attemptId: string,
   position: number,
   transcript: string,
-  elapsedMs: number
+  elapsedMs: number,
+  idempotencyKey: string
 ): Promise<TjmVoiceCandidate> {
   return requestJson(
     `/attempts/${encodeURIComponent(attemptId)}/items/${position}/voice-candidate`,
-    jsonInit('POST', { transcript, elapsed_ms: elapsedMs })
+    tjmCommandInit('POST', { transcript, elapsed_ms: elapsedMs }, idempotencyKey)
   )
 }
 
@@ -182,30 +214,35 @@ export function confirmTjmVoiceCandidate(
   position: number,
   candidateId: number,
   confidence: number | null,
-  elapsedMs: number
+  elapsedMs: number,
+  idempotencyKey: string
 ): Promise<TjmAttemptItem> {
   return requestJson(
     `/attempts/${encodeURIComponent(attemptId)}/items/${position}/voice-candidates/${candidateId}/confirm`,
-    jsonInit('POST', { confidence, elapsed_ms: elapsedMs })
+    tjmCommandInit('POST', { confidence, elapsed_ms: elapsedMs }, idempotencyKey)
   )
 }
 
 export function cancelTjmVoiceCandidate(
   attemptId: string,
   position: number,
-  candidateId: number
+  candidateId: number,
+  idempotencyKey: string
 ): Promise<{ candidate_id: number; status: 'cancelled' }> {
   return requestJson(
     `/attempts/${encodeURIComponent(attemptId)}/items/${position}/voice-candidates/${candidateId}/cancel`,
-    jsonInit('POST')
+    tjmCommandInit('POST', undefined, idempotencyKey)
   )
 }
 
-export async function submitTjmAttempt(attemptId: string): Promise<TjmAttempt> {
+export async function submitTjmAttempt(
+  attemptId: string,
+  idempotencyKey: string
+): Promise<TjmAttempt> {
   return normalizeAttemptForClient(
     await requestJson<TjmAttempt>(
       `/attempts/${encodeURIComponent(attemptId)}/submit`,
-      jsonInit('POST')
+      tjmCommandInit('POST', undefined, idempotencyKey)
     )
   )
 }
@@ -219,9 +256,16 @@ export async function getTjmReviewQueue(): Promise<TjmReviewQueueItem[]> {
   return (await requestJson<{ items: TjmReviewQueueItem[] }>('/review/queue')).items
 }
 
-export async function startTjmReviewAttempt(examId: string, limit = 20): Promise<TjmAttempt> {
+export async function startTjmReviewAttempt(
+  examId: string,
+  limit: number,
+  idempotencyKey: string
+): Promise<TjmAttempt> {
   return normalizeAttemptForClient(
-    await requestJson<TjmAttempt>('/review/attempts', jsonInit('POST', { exam_id: examId, limit }))
+    await requestJson<TjmAttempt>(
+      '/review/attempts',
+      tjmCommandInit('POST', { exam_id: examId, limit }, idempotencyKey)
+    )
   )
 }
 

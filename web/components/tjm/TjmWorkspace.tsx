@@ -37,6 +37,10 @@ import { useTjmVoice } from '@/hooks/useTjmVoice'
 import { fetchAuthStatus } from '@/lib/auth'
 import { adminReviewActions, selectAdminReviewQuestions } from '@/lib/tjm-admin'
 import {
+  canAnswerTjmItem,
+  shouldRefreshExpiredTjmAttempt,
+} from '@/lib/tjm-attempt-state'
+import {
   activateTjmExam,
   cancelTjmVoiceCandidate,
   confirmTjmVoiceCandidate,
@@ -48,6 +52,7 @@ import {
   importTjmQuestions,
   listTjmExams,
   listTjmReviewQuestions,
+  openTjmAttemptItem,
   publishTjmQuestion,
   recordTjmAnswer,
   recordTjmVoiceCandidate,
@@ -57,8 +62,10 @@ import {
   startTjmAttempt,
   startTjmReviewAttempt,
   submitTjmAttempt,
+  TjmApiError,
   updateTjmDraft,
 } from '@/lib/tjm-api'
+import { TjmCommandLedger } from '@/lib/tjm-command'
 import {
   hasGrade,
   type TjmAnalytics,
@@ -100,6 +107,15 @@ function percent(value: number | null): string {
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : 'An unexpected error occurred.'
+}
+
+function sessionCommandStorage(): Storage | undefined {
+  if (typeof window === 'undefined') return undefined
+  try {
+    return window.sessionStorage
+  } catch {
+    return undefined
+  }
 }
 
 function TabButton({
@@ -265,21 +281,98 @@ function AttemptDesk({
   const [submitOpen, setSubmitOpen] = useState(false)
   const [voiceCandidate, setVoiceCandidate] = useState<TjmVoiceCandidate | null>(null)
   const [secondsLeft, setSecondsLeft] = useState<number | null>(null)
+  const [openedItems, setOpenedItems] = useState<Record<string, boolean>>({})
+  const [openingItems, setOpeningItems] = useState<Record<string, boolean>>({})
+  const [openRetry, setOpenRetry] = useState(0)
+  const [expiryPoll, setExpiryPoll] = useState(0)
   const openedAtRef = useRef<Record<number, number>>({})
+  const expiryRefreshRef = useRef<string | null>(null)
+  const openRequestsRef = useRef(new Map<string, Promise<Awaited<ReturnType<typeof openTjmAttemptItem>>>>())
+  const voiceTargetRef = useRef<{ attemptId: string; position: number } | null>(null)
+  const commandLedgerRef = useRef<TjmCommandLedger | null>(null)
+  if (!commandLedgerRef.current) {
+    commandLedgerRef.current = new TjmCommandLedger(
+      undefined,
+      sessionCommandStorage(),
+      `deeptutor.tjm.attemptCommands.${attempt.id}`
+    )
+  }
+  const commandLedger = commandLedgerRef.current
   const item = attempt.items[position]
   const finalized = attempt.status !== 'in_progress'
+  const itemScope = `${attempt.id}:${position}`
+  const answerScope = `answer:${itemScope}`
+  const serverOpened = finalized || Boolean(item?.first_presented_at) || Boolean(openedItems[itemScope])
+  const deadlineReached = secondsLeft === 0
+  const canAnswer = canAnswerTjmItem({
+    status: attempt.status,
+    mode: attempt.mode,
+    confirmed: Boolean(item?.confirmed_option_key),
+    serverOpened,
+    secondsLeft,
+  })
+  const applyAttempt = useCallback(
+    (updated: TjmAttempt) => {
+      if (updated.status === 'in_progress') onChange(updated)
+      else onFinalize(updated)
+    },
+    [onChange, onFinalize]
+  )
   const elapsedMs = () => Math.max(0, Date.now() - (openedAtRef.current[position] ?? Date.now()))
   const voice = useTjmVoice(async transcript => {
-    const candidate = await recordTjmVoiceCandidate(attempt.id, position, transcript, elapsedMs())
+    const target = voiceTargetRef.current
+    if (!target || target.attemptId !== attempt.id || target.position !== position) {
+      throw new Error('The question changed before transcription finished. No answer was saved.')
+    }
+    const targetScope = `${target.attemptId}:${target.position}`
+    const scope = `voice-candidate:${targetScope}:${transcript}`
+    const command = commandLedger.begin(scope, () => ({
+      position: target.position,
+      transcript,
+      elapsedMs: elapsedMs(),
+    }))
+    const candidate = await recordTjmVoiceCandidate(
+      attempt.id,
+      command.payload.position,
+      command.payload.transcript,
+      command.payload.elapsedMs,
+      command.key
+    )
+    commandLedger.complete(scope, command.key)
+    voiceTargetRef.current = null
     if (candidate.proposed_option_key === null) {
-      await cancelTjmVoiceCandidate(attempt.id, position, candidate.candidate_id)
+      const cancelScope = `voice-cancel:${attempt.id}:${candidate.candidate_id}`
+      const cancelCommand = commandLedger.begin(cancelScope, () => ({
+        position: target.position,
+        candidateId: candidate.candidate_id,
+      }))
+      try {
+        await cancelTjmVoiceCandidate(
+          attempt.id,
+          cancelCommand.payload.position,
+          cancelCommand.payload.candidateId,
+          cancelCommand.key
+        )
+        commandLedger.complete(cancelScope, cancelCommand.key)
+      } catch (reason) {
+        setVoiceCandidate(candidate)
+        throw new Error(
+          `The speech did not map to a choice, and discarding it failed. Retry dismissal. ${messageOf(reason)}`
+        )
+      }
       throw new Error(
         `I heard “${candidate.transcript}”, but could not map it to one choice. Please try again or answer on screen.`
       )
     }
     setVoiceCandidate(candidate)
   })
-  const { stopListening } = voice
+  const { stopListening, stopSpeaking } = voice
+  const interactionBusy =
+    actionBusy ||
+    busy ||
+    voice.state !== 'idle' ||
+    voiceCandidate !== null ||
+    submitOpen
 
   useEffect(() => {
     setPosition(current => Math.min(current, Math.max(0, attempt.items.length - 1)))
@@ -290,9 +383,72 @@ function AttemptDesk({
   }, [position])
 
   useEffect(() => {
+    if (!item || finalized || item.first_presented_at || openedItems[itemScope]) return
+    let active = true
+    setOpeningItems(current => ({ ...current, [itemScope]: true }))
+    let request = openRequestsRef.current.get(itemScope)
+    if (!request) {
+      request = openTjmAttemptItem(attempt.id, position)
+      openRequestsRef.current.set(itemScope, request)
+      void request.then(
+        () => openRequestsRef.current.delete(itemScope),
+        () => openRequestsRef.current.delete(itemScope)
+      )
+    }
+    void request
+      .then(() => {
+        if (!active) return
+        setOpenedItems(current => ({ ...current, [itemScope]: true }))
+        setError(null)
+      })
+      .catch(async reason => {
+        if (!active) return
+        if (reason instanceof TjmApiError && reason.status === 409) {
+          try {
+            const updated = await getTjmAttempt(attempt.id)
+            if (active) applyAttempt(updated)
+            return
+          } catch (refreshError) {
+            if (active) {
+              setError(`${messageOf(reason)} Refresh also failed: ${messageOf(refreshError)}`)
+            }
+            return
+          }
+        }
+        setError(`Question timing could not start. ${messageOf(reason)}`)
+      })
+      .finally(() => {
+        if (active) setOpeningItems(current => ({ ...current, [itemScope]: false }))
+      })
+    return () => {
+      active = false
+    }
+  }, [
+    applyAttempt,
+    attempt.id,
+    finalized,
+    item,
+    itemScope,
+    openRetry,
+    openedItems,
+    position,
+  ])
+
+  useEffect(() => {
     setVoiceCandidate(null)
+    voiceTargetRef.current = null
     void stopListening()
   }, [position, stopListening])
+
+  useEffect(() => {
+    if (!finalized) return
+    commandLedger.clear()
+    voiceTargetRef.current = null
+    setVoiceCandidate(null)
+    setSubmitOpen(false)
+    void stopListening()
+    stopSpeaking()
+  }, [commandLedger, finalized, stopListening, stopSpeaking])
 
   useEffect(() => {
     if (attempt.mode !== 'exam' || !attempt.deadline_at || finalized) {
@@ -308,12 +464,60 @@ function AttemptDesk({
   }, [attempt.deadline_at, attempt.mode, finalized])
 
   useEffect(() => {
+    if (!shouldRefreshExpiredTjmAttempt(attempt.status, attempt.mode, secondsLeft)) return
+    const expiryKey = `${attempt.id}:${attempt.deadline_at ?? ''}`
+    if (expiryRefreshRef.current === expiryKey) return
+    expiryRefreshRef.current = expiryKey
+    let active = true
+    let retryTimer: number | undefined
+    const refreshExpiredAttempt = async () => {
+      voiceTargetRef.current = null
+      setVoiceCandidate(null)
+      setSubmitOpen(false)
+      await stopListening()
+      stopSpeaking()
+      try {
+        const updated = await getTjmAttempt(attempt.id)
+        if (!active) return
+        if (updated.status === 'in_progress') {
+          expiryRefreshRef.current = null
+          retryTimer = window.setTimeout(() => setExpiryPoll(value => value + 1), 1000)
+          return
+        }
+        applyAttempt(updated)
+      } catch (reason) {
+        if (!active) return
+        setError(`The deadline was reached, but final status could not be refreshed. ${messageOf(reason)}`)
+        expiryRefreshRef.current = null
+        retryTimer = window.setTimeout(() => setExpiryPoll(value => value + 1), 2000)
+      }
+    }
+    void refreshExpiredAttempt()
+    return () => {
+      active = false
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer)
+    }
+  }, [
+    attempt.deadline_at,
+    attempt.id,
+    attempt.mode,
+    attempt.status,
+    applyAttempt,
+    expiryPoll,
+    finalized,
+    secondsLeft,
+    stopListening,
+    stopSpeaking,
+  ])
+
+  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null
       if (target?.closest('input, textarea, select, [contenteditable=true]')) return
-      if (finalized || actionBusy) return
+      if (interactionBusy) return
       const choiceIndex = Number(event.key) - 1
-      if (Number.isInteger(choiceIndex) && item?.choices[choiceIndex]) {
+      if (canAnswer && Number.isInteger(choiceIndex) && item?.choices[choiceIndex]) {
+        commandLedger.abandon(answerScope)
         setSelected(value => ({ ...value, [position]: item.choices[choiceIndex].key }))
       }
       if (event.key === 'ArrowLeft') setPosition(value => Math.max(0, value - 1))
@@ -322,7 +526,15 @@ function AttemptDesk({
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [actionBusy, attempt.items.length, finalized, item, position])
+  }, [
+    answerScope,
+    attempt.items.length,
+    canAnswer,
+    commandLedger,
+    interactionBusy,
+    item,
+    position,
+  ])
 
   if (!item) {
     return (
@@ -337,43 +549,79 @@ function AttemptDesk({
   const isConfirmed = item.confirmed_option_key !== null
   const refreshAttempt = async () => {
     const updated = await getTjmAttempt(attempt.id)
-    onChange(updated)
+    applyAttempt(updated)
     return updated
   }
 
+  const recoverMutationError = async (reason: unknown) => {
+    setError(messageOf(reason))
+    if (!(reason instanceof TjmApiError) || reason.status !== 409) return
+    try {
+      const updated = await getTjmAttempt(attempt.id)
+      applyAttempt(updated)
+    } catch (refreshError) {
+      setError(`${messageOf(reason)} Refresh also failed: ${messageOf(refreshError)}`)
+    }
+  }
+
+  const toggleVoiceCapture = async () => {
+    if (voice.state === 'listening' || voice.state === 'speech') {
+      voiceTargetRef.current = null
+      await voice.stopListening()
+      return
+    }
+    voiceTargetRef.current = { attemptId: attempt.id, position }
+    await voice.startListening()
+  }
+
   const confirmAnswer = async () => {
-    if (!selectedKey) return
+    if (!selectedKey || !canAnswer) return
     setActionBusy(true)
     setError(null)
+    const command = commandLedger.begin(answerScope, () => ({
+      position,
+      selected_option_key: selectedKey,
+      confidence: confidenceValue,
+      elapsed_ms: elapsedMs(),
+      confirmed: true,
+      client_created_at: new Date().toISOString(),
+    }))
     try {
-      await recordTjmAnswer(attempt.id, {
-        position,
-        selected_option_key: selectedKey,
-        confidence: confidenceValue,
-        elapsed_ms: elapsedMs(),
-        confirmed: true,
-        client_created_at: new Date().toISOString(),
-      })
+      await recordTjmAnswer(attempt.id, command.payload, command.key)
       await refreshAttempt()
+      commandLedger.complete(answerScope, command.key)
     } catch (reason) {
-      setError(messageOf(reason))
+      await recoverMutationError(reason)
     } finally {
       setActionBusy(false)
     }
   }
 
   const revealHint = async () => {
+    if (!canAnswer) return
     setActionBusy(true)
     setError(null)
+    const scope = `hint:${itemScope}`
+    const command = commandLedger.begin(scope, () => ({
+      position,
+      elapsedMs: elapsedMs(),
+    }))
     try {
-      const result = await requestTjmHint(attempt.id, position, elapsedMs())
-      setHints(value => ({
-        ...value,
-        [position]: [...(value[position] ?? []), result.hint],
-      }))
+      const result = await requestTjmHint(
+        attempt.id,
+        command.payload.position,
+        command.payload.elapsedMs,
+        command.key
+      )
+      setHints(value => {
+        const nextHints = [...(value[position] ?? [])]
+        nextHints[result.hint_number - 1] = result.hint
+        return { ...value, [position]: nextHints }
+      })
       await refreshAttempt()
+      commandLedger.complete(scope, command.key)
     } catch (reason) {
-      setError(messageOf(reason))
+      await recoverMutationError(reason)
     } finally {
       setActionBusy(false)
     }
@@ -382,14 +630,17 @@ function AttemptDesk({
   const finalize = async () => {
     setActionBusy(true)
     setError(null)
+    const scope = `submit:${attempt.id}`
+    const command = commandLedger.begin(scope, () => ({}))
     try {
       await voice.stopListening()
       voice.stopSpeaking()
-      const result = await submitTjmAttempt(attempt.id)
-      onFinalize(result)
+      const result = await submitTjmAttempt(attempt.id, command.key)
+      applyAttempt(result)
+      commandLedger.complete(scope, command.key)
       setSubmitOpen(false)
     } catch (reason) {
-      setError(messageOf(reason))
+      await recoverMutationError(reason)
       setSubmitOpen(false)
     } finally {
       setActionBusy(false)
@@ -397,22 +648,39 @@ function AttemptDesk({
   }
 
   const confirmVoiceAnswer = async () => {
-    if (!voiceCandidate) return
+    if (!voiceCandidate || !canAnswer) return
     setActionBusy(true)
     setError(null)
+    const scope = `voice-confirm:${attempt.id}:${voiceCandidate.candidate_id}`
+    const command = commandLedger.begin(scope, () => ({
+      position,
+      candidateId: voiceCandidate.candidate_id,
+      confidence: confidenceValue,
+      elapsedMs: elapsedMs(),
+    }))
     try {
-      await confirmTjmVoiceCandidate(
+      const confirmedItem = await confirmTjmVoiceCandidate(
         attempt.id,
-        position,
-        voiceCandidate.candidate_id,
-        confidenceValue,
-        elapsedMs()
+        command.payload.position,
+        command.payload.candidateId,
+        command.payload.confidence,
+        command.payload.elapsedMs,
+        command.key
       )
-      setVoiceCandidate(null)
+      if (confirmedItem.confirmed_option_key) {
+        setSelected(value => ({
+          ...value,
+          [position]: confirmedItem.confirmed_option_key!,
+        }))
+      }
+      if (confirmedItem.confidence !== null) {
+        setConfidence(value => ({ ...value, [position]: confirmedItem.confidence! }))
+      }
       await refreshAttempt()
-    } catch (reason) {
-      setError(messageOf(reason))
+      commandLedger.complete(scope, command.key)
       setVoiceCandidate(null)
+    } catch (reason) {
+      await recoverMutationError(reason)
     } finally {
       setActionBusy(false)
     }
@@ -421,11 +689,26 @@ function AttemptDesk({
   const cancelVoiceAnswer = async () => {
     if (!voiceCandidate) return
     const candidate = voiceCandidate
-    setVoiceCandidate(null)
+    const scope = `voice-cancel:${attempt.id}:${candidate.candidate_id}`
+    const command = commandLedger.begin(scope, () => ({
+      position,
+      candidateId: candidate.candidate_id,
+    }))
+    setActionBusy(true)
+    setError(null)
     try {
-      await cancelTjmVoiceCandidate(attempt.id, position, candidate.candidate_id)
+      await cancelTjmVoiceCandidate(
+        attempt.id,
+        command.payload.position,
+        command.payload.candidateId,
+        command.key
+      )
+      commandLedger.complete(scope, command.key)
+      setVoiceCandidate(null)
     } catch (reason) {
-      setError(messageOf(reason))
+      await recoverMutationError(reason)
+    } finally {
+      setActionBusy(false)
     }
   }
 
@@ -466,7 +749,7 @@ function AttemptDesk({
                 Question {position + 1} · {item.area}
               </p>
               <h1 className="mt-3 max-w-3xl font-serif text-[21px] font-semibold leading-[1.55] tracking-[-0.01em] text-[var(--foreground)] sm:text-[24px]">
-                {item.stem}
+                {serverOpened ? item.stem : 'Starting server-side question timing…'}
               </h1>
             </div>
             {isConfirmed ? (
@@ -480,6 +763,7 @@ function AttemptDesk({
             <Button
               type="button"
               variant="ghost"
+              disabled={!serverOpened || (deadlineReached && !finalized)}
               icon={voice.state === 'speaking' ? <VolumeX size={15} /> : <Volume2 size={15} />}
               onClick={() =>
                 voice.state === 'speaking'
@@ -506,7 +790,7 @@ function AttemptDesk({
           </div>
 
           <div className="grid gap-2.5" role="radiogroup" aria-label="Answer choices">
-            {item.choices.map((choice, index) => {
+            {serverOpened ? item.choices.map((choice, index) => {
               const chosen = choice.key === selectedKey
               const graded = hasGrade(item)
               const correct = graded && choice.key === item.correct_option_key
@@ -517,8 +801,11 @@ function AttemptDesk({
                   type="button"
                   role="radio"
                   aria-checked={chosen}
-                  disabled={isConfirmed || finalized || actionBusy}
-                  onClick={() => setSelected(value => ({ ...value, [position]: choice.key }))}
+                  disabled={!canAnswer || interactionBusy}
+                  onClick={() => {
+                    commandLedger.abandon(answerScope)
+                    setSelected(value => ({ ...value, [position]: choice.key }))
+                  }}
                   className={`group flex w-full items-start gap-3 rounded-xl border px-4 py-3.5 text-left text-sm leading-6 transition disabled:cursor-default ${
                     correct
                       ? 'border-emerald-500/60 bg-emerald-500/8'
@@ -537,10 +824,16 @@ function AttemptDesk({
                   <span>{choice.text}</span>
                 </button>
               )
-            })}
+            }) : Array.from({ length: item.choices.length }, (_, index) => (
+              <div
+                key={`opening-${index}`}
+                aria-hidden="true"
+                className="h-[54px] animate-pulse rounded-xl border border-[var(--border)] bg-[var(--secondary)]/45"
+              />
+            ))}
           </div>
 
-          {!finalized && !isConfirmed ? (
+          {canAnswer ? (
             <div className="mt-6 rounded-xl border border-[var(--border)] bg-[var(--secondary)]/35 p-4">
               <div className="mb-3 flex items-center justify-between gap-3 text-xs">
                 <label
@@ -558,9 +851,14 @@ function AttemptDesk({
                 max={100}
                 step={10}
                 value={confidenceValue}
-                onChange={event =>
-                  setConfidence(value => ({ ...value, [position]: Number(event.target.value) }))
-                }
+                disabled={interactionBusy}
+                onChange={event => {
+                  commandLedger.abandon(answerScope)
+                  setConfidence(value => ({
+                    ...value,
+                    [position]: Number(event.target.value),
+                  }))
+                }}
                 className="w-full accent-[var(--foreground)]"
               />
               <div className="mt-1 flex justify-between text-[10px] text-[var(--muted-foreground)]">
@@ -603,14 +901,36 @@ function AttemptDesk({
               <CircleAlert size={16} className="mt-0.5 shrink-0" /> {error || voice.error}
             </div>
           ) : null}
+          {!serverOpened && !finalized ? (
+            <div className="mt-4 flex items-center gap-3 rounded-xl border border-amber-500/25 bg-amber-500/8 px-4 py-3 text-sm">
+              {openingItems[itemScope] ? (
+                <>
+                  <Loader2 size={16} className="animate-spin" /> Starting server-side question timing…
+                </>
+              ) : (
+                <>
+                  <span>Question timing is not active, so answers remain disabled.</span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setOpenRetry(value => value + 1)}
+                  >
+                    Retry
+                  </Button>
+                </>
+              )}
+            </div>
+          ) : null}
         </div>
 
         <footer className="sticky bottom-0 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--border)] bg-[var(--card)]/95 px-5 py-4 backdrop-blur sm:px-8">
           <div className="flex gap-2">
-            {attempt.mode !== 'exam' && !finalized && !isConfirmed ? (
+            {attempt.mode !== 'exam' && canAnswer ? (
               <Button
                 type="button"
                 variant="ghost"
+                disabled={interactionBusy}
                 loading={actionBusy}
                 icon={<Lightbulb size={15} />}
                 onClick={revealHint}
@@ -618,18 +938,18 @@ function AttemptDesk({
                 Hint
               </Button>
             ) : null}
-            {!finalized && !isConfirmed ? (
+            {canAnswer ? (
               <Button
                 type="button"
                 variant="ghost"
-                disabled={actionBusy || busy || voice.state === 'transcribing'}
+                disabled={
+                  actionBusy ||
+                  busy ||
+                  !['idle', 'listening', 'speech'].includes(voice.state)
+                }
                 loading={voice.state === 'loading' || voice.state === 'transcribing'}
                 icon={<Mic size={15} />}
-                onClick={() =>
-                  voice.state === 'listening' || voice.state === 'speech'
-                    ? void voice.stopListening()
-                    : void voice.startListening()
-                }
+                onClick={() => void toggleVoiceCapture()}
               >
                 {voice.state === 'speech'
                   ? 'Hearing speech…'
@@ -640,15 +960,15 @@ function AttemptDesk({
                       : 'Answer by voice'}
               </Button>
             ) : null}
-            {!finalized && !isConfirmed ? (
+            {canAnswer ? (
               <Button
                 type="button"
-                disabled={!selectedKey || busy}
+                disabled={!selectedKey || interactionBusy}
                 loading={actionBusy}
                 icon={<LockKeyhole size={15} />}
                 onClick={confirmAnswer}
               >
-                Confirm answer
+                {isConfirmed && attempt.mode === 'exam' ? 'Change answer' : 'Confirm answer'}
               </Button>
             ) : null}
           </div>
@@ -656,7 +976,7 @@ function AttemptDesk({
             <Button
               type="button"
               variant="ghost"
-              disabled={position === 0}
+              disabled={position === 0 || interactionBusy}
               icon={<ChevronLeft size={15} />}
               onClick={() => setPosition(value => value - 1)}
             >
@@ -666,6 +986,7 @@ function AttemptDesk({
               <Button
                 type="button"
                 variant="secondary"
+                disabled={interactionBusy}
                 icon={<ChevronRight size={15} />}
                 onClick={() => setPosition(value => value + 1)}
               >
@@ -679,6 +1000,7 @@ function AttemptDesk({
               <Button
                 type="button"
                 variant="secondary"
+                disabled={deadlineReached || interactionBusy}
                 icon={<FileCheck2 size={15} />}
                 onClick={() => setSubmitOpen(true)}
               >
@@ -710,6 +1032,7 @@ function AttemptDesk({
               <button
                 key={entry.position}
                 type="button"
+                disabled={interactionBusy}
                 onClick={() => setPosition(entry.position)}
                 aria-label={`Question ${entry.position + 1}${entry.confirmed_option_key ? ', answered' : ''}`}
                 className={`aspect-square rounded-lg border font-mono text-xs font-semibold transition ${
@@ -735,6 +1058,7 @@ function AttemptDesk({
           {!finalized ? (
             <button
               type="button"
+              disabled={interactionBusy}
               onClick={onExit}
               className="mt-4 text-xs text-[var(--muted-foreground)] underline-offset-4 hover:text-[var(--foreground)] hover:underline"
             >
@@ -746,15 +1070,25 @@ function AttemptDesk({
 
       <ConfirmDialog
         open={voiceCandidate !== null}
-        title="Confirm voice answer"
-        confirmLabel="Confirm answer"
+        title={
+          voiceCandidate?.proposed_option_key === null
+            ? 'Voice answer not recognized'
+            : 'Confirm voice answer'
+        }
+        confirmLabel={voiceCandidate?.proposed_option_key === null ? 'Dismiss' : 'Confirm answer'}
         busy={actionBusy}
         busyLabel="Saving…"
-        onConfirm={() => void confirmVoiceAnswer()}
+        onConfirm={() =>
+          void (voiceCandidate?.proposed_option_key === null
+            ? cancelVoiceAnswer()
+            : confirmVoiceAnswer())
+        }
         onCancel={() => void cancelVoiceAnswer()}
       >
         {voiceCandidate
-          ? `I heard “${voiceCandidate.transcript}”. Confirm option ${voiceCandidate.proposed_option_key}? The answer is saved only after this confirmation.`
+          ? voiceCandidate.proposed_option_key === null
+            ? `I heard “${voiceCandidate.transcript}”, but it did not map to one choice. Dismissal is retried with the same command key.`
+            : `I heard “${voiceCandidate.transcript}”. Confirm option ${voiceCandidate.proposed_option_key}? The answer is saved only after this confirmation.`
           : ''}
       </ConfirmDialog>
 
@@ -1535,6 +1869,15 @@ export default function TjmWorkspace() {
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const commandLedgerRef = useRef<TjmCommandLedger | null>(null)
+  if (!commandLedgerRef.current) {
+    commandLedgerRef.current = new TjmCommandLedger(
+      undefined,
+      sessionCommandStorage(),
+      'deeptutor.tjm.workspaceCommands'
+    )
+  }
+  const commandLedger = commandLedgerRef.current
 
   const refresh = useCallback(async () => {
     setError(null)
@@ -1571,7 +1914,11 @@ export default function TjmWorkspace() {
       const attemptId = window.sessionStorage.getItem(ACTIVE_ATTEMPT_KEY)
       if (attemptId && active) {
         try {
-          setAttempt(await getTjmAttempt(attemptId))
+          const restored = await getTjmAttempt(attemptId)
+          setAttempt(restored)
+          if (restored.status !== 'in_progress') {
+            window.sessionStorage.removeItem(ACTIVE_ATTEMPT_KEY)
+          }
         } catch {
           window.sessionStorage.removeItem(ACTIVE_ATTEMPT_KEY)
         }
@@ -1592,8 +1939,13 @@ export default function TjmWorkspace() {
   const start = async (exam: TjmExam, mode: 'practice' | 'exam') => {
     setBusy(true)
     setError(null)
+    const scope = `start:${exam.id}:${mode}`
+    const command = commandLedger.begin(scope, () => ({ examId: exam.id, mode }))
     try {
-      openAttempt(await startTjmAttempt(exam.id, mode))
+      openAttempt(
+        await startTjmAttempt(command.payload.examId, command.payload.mode, command.key)
+      )
+      commandLedger.complete(scope, command.key)
     } catch (reason) {
       setError(messageOf(reason))
     } finally {
@@ -1604,8 +1956,13 @@ export default function TjmWorkspace() {
   const startReview = async (examId: string) => {
     setBusy(true)
     setError(null)
+    const scope = `start-review:${examId}`
+    const command = commandLedger.begin(scope, () => ({ examId, limit: 20 }))
     try {
-      openAttempt(await startTjmReviewAttempt(examId))
+      openAttempt(
+        await startTjmReviewAttempt(command.payload.examId, command.payload.limit, command.key)
+      )
+      commandLedger.complete(scope, command.key)
       setTab('learn')
     } catch (reason) {
       setError(messageOf(reason))
@@ -1621,6 +1978,9 @@ export default function TjmWorkspace() {
   }
 
   const leaveAttempt = () => {
+    if (attempt?.status !== 'in_progress') {
+      window.sessionStorage.removeItem(ACTIVE_ATTEMPT_KEY)
+    }
     setAttempt(null)
   }
 

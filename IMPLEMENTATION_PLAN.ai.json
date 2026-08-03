@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "updated_at": "2026-08-03_12:45",
+  "updated_at": "2026-08-03_13:27",
   "timezone": "Asia/Tokyo",
   "status": "in_progress",
   "current_checkpoint": "CP-13",
@@ -387,7 +387,35 @@
         "related_tjm_api_tests": {"passed": 66, "warnings": 211},
         "web_node_tests": {"passed": 377, "legacy_admin_behavior_tests": 3},
         "web_typecheck_and_targeted_lint": "passed",
-        "ruff": "passed"
+        "ruff": "passed",
+        "remote_commit": "b48301dc"
+      },
+      "learning_timing_idempotency_expiry": {
+        "status": "completed",
+        "learning_schema_version": 2,
+        "formal_time": "server elapsed from first presented to first confirmed answer; client elapsed retained only as diagnostics",
+        "legacy_time_policy": "backfill legacy client elapsed and final answer timestamp only; never infer first presentation, first answer, or server elapsed",
+        "explicit_item_open": "web hides stem and choices until POST item-open is acknowledged",
+        "expiry_policy": "now greater than or equal to deadline atomically grades once, records deadline as submitted_at, and returns expired state through read and write entry points",
+        "idempotency_commands": [
+          "start_attempt",
+          "start_review_attempt",
+          "record_answer",
+          "use_hint",
+          "record_voice_candidate",
+          "confirm_voice_candidate",
+          "cancel_voice_candidate",
+          "submit_attempt"
+        ],
+        "idempotency_replay": "stored response precedes mutable catalog, queue, deadline, and current-state checks; same key with another canonical payload fails 409",
+        "browser_retry": "first-party key and exact body persist in sessionStorage until completion and survive same-tab reload",
+        "answer_change_policy": "practice and review lock after feedback reveal; exam remains editable until finalization",
+        "voice_race_policy": "recording target is fixed at microphone start; navigation and screen mutations lock during voice processing; deadline closes microphone, speech, and confirmation dialogs",
+        "targeted_tests": {"passed": 49, "warnings": 211},
+        "related_tjm_api_tests": {"passed": 83, "warnings": 211},
+        "web_node_tests": {"passed": 386},
+        "web_typecheck_and_targeted_lint": "passed",
+        "ruff_and_diff_check": "passed"
       }
     }
   },

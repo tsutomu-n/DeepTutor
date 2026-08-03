@@ -521,6 +521,64 @@ CREATE INDEX idx_review_queue_pending
 """
 
 
+_LEARNING_V2 = """
+ALTER TABLE attempt_items ADD COLUMN first_presented_at TEXT;
+ALTER TABLE attempt_items ADD COLUMN first_answered_at TEXT;
+ALTER TABLE attempt_items ADD COLUMN final_answered_at TEXT;
+ALTER TABLE attempt_items ADD COLUMN server_elapsed_ms INTEGER
+    CHECK (server_elapsed_ms IS NULL OR server_elapsed_ms >= 0);
+ALTER TABLE attempt_items ADD COLUMN client_active_elapsed_ms INTEGER
+    CHECK (client_active_elapsed_ms IS NULL OR client_active_elapsed_ms >= 0);
+
+UPDATE attempt_items
+SET final_answered_at = answered_at,
+    client_active_elapsed_ms = elapsed_ms;
+
+ALTER TABLE answer_events ADD COLUMN client_event_id TEXT;
+ALTER TABLE answer_events ADD COLUMN server_elapsed_ms INTEGER
+    CHECK (server_elapsed_ms IS NULL OR server_elapsed_ms >= 0);
+ALTER TABLE answer_events ADD COLUMN client_active_elapsed_ms INTEGER
+    CHECK (client_active_elapsed_ms IS NULL OR client_active_elapsed_ms >= 0);
+
+UPDATE answer_events SET client_active_elapsed_ms = elapsed_ms;
+
+CREATE TABLE learning_commands (
+    idempotency_key TEXT PRIMARY KEY CHECK (
+        length(trim(idempotency_key)) BETWEEN 1 AND 200
+    ),
+    command_type TEXT NOT NULL CHECK (length(trim(command_type)) > 0),
+    target_id TEXT NOT NULL CHECK (length(trim(target_id)) > 0),
+    request_hash TEXT NOT NULL CHECK (length(request_hash) = 64),
+    response_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TRIGGER prevent_learning_command_update
+BEFORE UPDATE ON learning_commands
+BEGIN
+    SELECT RAISE(ABORT, 'learning command is immutable');
+END;
+
+CREATE TRIGGER prevent_learning_command_delete
+BEFORE DELETE ON learning_commands
+BEGIN
+    SELECT RAISE(ABORT, 'learning command is immutable');
+END;
+
+CREATE TRIGGER prevent_answer_event_update
+BEFORE UPDATE ON answer_events
+BEGIN
+    SELECT RAISE(ABORT, 'answer event is immutable');
+END;
+
+CREATE TRIGGER prevent_answer_event_delete
+BEFORE DELETE ON answer_events
+BEGIN
+    SELECT RAISE(ABORT, 'answer event is immutable');
+END;
+"""
+
+
 class CatalogStore(_SQLiteStore):
     """Authoritative deployment-wide exam and immutable question catalog."""
 
@@ -530,7 +588,7 @@ class CatalogStore(_SQLiteStore):
 class LearningStore(_SQLiteStore):
     """Request-owner-scoped attempts and append-only answer history."""
 
-    migrations = (_LEARNING_V1,)
+    migrations = (_LEARNING_V1, _LEARNING_V2)
 
 
 __all__ = ["CatalogStore", "LearningStore", "UnsupportedSchemaVersion"]

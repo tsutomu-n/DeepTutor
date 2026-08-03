@@ -26,6 +26,10 @@ test("TJM workspace exposes every required user and human-review surface", () =>
   assert.match(workspace, /sessionStorage/);
   assert.match(workspace, /ConfirmDialog/);
   assert.match(workspace, /aria-live="polite"/);
+  assert.match(workspace, /openTjmAttemptItem/);
+  assert.match(workspace, /TjmCommandLedger/);
+  assert.match(workspace, /shouldRefreshExpiredTjmAttempt/);
+  assert.match(workspace, /Change answer/);
   assert.doesNotMatch(
     workspace,
     /selected_option_key\s*===\s*correct_option_key/,

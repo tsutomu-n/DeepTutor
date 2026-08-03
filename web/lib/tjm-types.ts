@@ -52,9 +52,14 @@ export interface TjmAttemptItemBase {
   area: string
   opened_at: string | null
   answered_at: string | null
+  first_presented_at: string | null
+  first_answered_at: string | null
+  final_answered_at: string | null
   confirmed_option_key: string | null
   confidence: number | null
   elapsed_ms: number | null
+  server_elapsed_ms: number | null
+  client_active_elapsed_ms: number | null
   hint_count: number
 }
 

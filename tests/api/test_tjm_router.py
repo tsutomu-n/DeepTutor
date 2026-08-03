@@ -301,6 +301,7 @@ def test_practice_attempt_api_returns_immediate_deterministic_feedback(
     )
     assert started.status_code == 201
     attempt_id = started.json()["id"]
+    assert learner_client.post(f"/api/v1/tjm/attempts/{attempt_id}/items/0/open").status_code == 200
 
     hint = learner_client.post(
         f"/api/v1/tjm/attempts/{attempt_id}/items/0/hint", json={"elapsed_ms": 100}
@@ -327,6 +328,27 @@ def test_practice_attempt_api_returns_immediate_deterministic_feedback(
     assert history.json()["attempts"][0]["id"] == attempt_id
 
 
+def test_start_attempt_api_retry_does_not_create_a_second_attempt(
+    learner_client: TestClient,
+) -> None:
+    payload = {"exam_id": "exam-learn", "mode": "exam"}
+    headers = {"Idempotency-Key": "start-attempt-1"}
+
+    first = learner_client.post("/api/v1/tjm/attempts", json=payload, headers=headers)
+    replay = learner_client.post("/api/v1/tjm/attempts", json=payload, headers=headers)
+    conflict = learner_client.post(
+        "/api/v1/tjm/attempts",
+        json={**payload, "mode": "practice"},
+        headers=headers,
+    )
+
+    assert first.status_code == replay.status_code == 201
+    assert replay.json() == first.json()
+    assert conflict.status_code == 409
+    history = learner_client.get("/api/v1/tjm/history").json()["attempts"]
+    assert [attempt["id"] for attempt in history] == [first.json()["id"]]
+
+
 def test_exam_attempt_api_has_no_answer_leak_before_submit(learner_client: TestClient) -> None:
     started = learner_client.post(
         "/api/v1/tjm/attempts", json={"exam_id": "exam-learn", "mode": "exam"}
@@ -335,6 +357,7 @@ def test_exam_attempt_api_has_no_answer_leak_before_submit(learner_client: TestC
     assert "correct_option_key" not in json.dumps(started.json())
     assert "official answer" not in json.dumps(started.json())
     attempt_id = started.json()["id"]
+    assert learner_client.post(f"/api/v1/tjm/attempts/{attempt_id}/items/0/open").status_code == 200
 
     answered = learner_client.post(
         f"/api/v1/tjm/attempts/{attempt_id}/answers",
@@ -356,12 +379,89 @@ def test_exam_attempt_api_has_no_answer_leak_before_submit(learner_client: TestC
     assert submitted.json()["items"][0]["is_correct"] is False
 
 
+def test_answer_and_submit_api_retries_are_idempotent_and_conflicts_fail_closed(
+    learner_client: TestClient,
+) -> None:
+    started = learner_client.post(
+        "/api/v1/tjm/attempts", json={"exam_id": "exam-learn", "mode": "exam"}
+    ).json()
+    attempt_id = started["id"]
+    opened = learner_client.post(f"/api/v1/tjm/attempts/{attempt_id}/items/0/open")
+    assert opened.status_code == 200
+    assert opened.json()["first_presented_at"]
+    answer_payload = {
+        "position": 0,
+        "selected_option_key": "A",
+        "confidence": 40,
+        "elapsed_ms": 700,
+        "confirmed": True,
+        "client_created_at": "2026-01-01T00:00:00Z",
+    }
+    headers = {"Idempotency-Key": "api-answer-1"}
+
+    first = learner_client.post(
+        f"/api/v1/tjm/attempts/{attempt_id}/answers", json=answer_payload, headers=headers
+    )
+    replay = learner_client.post(
+        f"/api/v1/tjm/attempts/{attempt_id}/answers", json=answer_payload, headers=headers
+    )
+    conflict = learner_client.post(
+        f"/api/v1/tjm/attempts/{attempt_id}/answers",
+        json={**answer_payload, "selected_option_key": "B"},
+        headers=headers,
+    )
+
+    assert first.status_code == replay.status_code == 200
+    assert replay.json() == first.json()
+    assert conflict.status_code == 409
+    submitted = learner_client.post(
+        f"/api/v1/tjm/attempts/{attempt_id}/submit",
+        headers={"Idempotency-Key": "api-submit-1"},
+    )
+    submit_replay = learner_client.post(
+        f"/api/v1/tjm/attempts/{attempt_id}/submit",
+        headers={"Idempotency-Key": "api-submit-1"},
+    )
+    answer_after_submit = learner_client.post(
+        f"/api/v1/tjm/attempts/{attempt_id}/answers", json=answer_payload, headers=headers
+    )
+    assert submitted.status_code == submit_replay.status_code == 200
+    assert submit_replay.json() == submitted.json()
+    assert answer_after_submit.json() == first.json()
+    assert "correct_option_key" not in answer_after_submit.json()
+
+
+def test_elapsed_value_outside_sqlite_integer_range_is_a_400(
+    learner_client: TestClient,
+) -> None:
+    started = learner_client.post(
+        "/api/v1/tjm/attempts", json={"exam_id": "exam-learn", "mode": "practice"}
+    ).json()
+    learner_client.post(f"/api/v1/tjm/attempts/{started['id']}/items/0/open")
+
+    response = learner_client.post(
+        f"/api/v1/tjm/attempts/{started['id']}/answers",
+        json={
+            "position": 0,
+            "selected_option_key": "A",
+            "confidence": 50,
+            "elapsed_ms": 9_223_372_036_854_775_808,
+            "confirmed": True,
+        },
+    )
+
+    assert response.status_code == 400
+
+
 def test_voice_answer_api_saves_only_after_candidate_confirmation(
     learner_client: TestClient,
 ) -> None:
     started = learner_client.post(
         "/api/v1/tjm/attempts", json={"exam_id": "exam-learn", "mode": "exam"}
     ).json()
+    assert (
+        learner_client.post(f"/api/v1/tjm/attempts/{started['id']}/items/0/open").status_code == 200
+    )
     candidate = learner_client.post(
         f"/api/v1/tjm/attempts/{started['id']}/items/0/voice-candidate",
         json={"transcript": "2番", "elapsed_ms": 700},
@@ -393,6 +493,9 @@ def test_review_queue_review_attempt_and_analytics_api(learner_client: TestClien
     started = learner_client.post(
         "/api/v1/tjm/attempts", json={"exam_id": "exam-learn", "mode": "practice"}
     ).json()
+    assert (
+        learner_client.post(f"/api/v1/tjm/attempts/{started['id']}/items/0/open").status_code == 200
+    )
     learner_client.post(
         f"/api/v1/tjm/attempts/{started['id']}/items/0/hint", json={"elapsed_ms": 100}
     )

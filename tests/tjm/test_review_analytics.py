@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
+import deeptutor.tjm.attempts as attempts_module
 from deeptutor.tjm.attempts import AttemptService, ReviewPolicy
 from deeptutor.tjm.catalog import CatalogService
 from deeptutor.tjm.domain import Choice, ExamSpec, QuestionVersionDraft
@@ -54,14 +58,18 @@ def _ready_services(tmp_path: Path) -> tuple[CatalogService, AttemptService, lis
 
 
 def test_review_queue_records_explainable_reasons_and_can_start_review(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _, attempts, _ = _ready_services(tmp_path)
     attempt = attempts.start_attempt(exam_id="exam-review", mode="practice")
     items = attempt["items"]
     correct = {item["position"]: item for item in items}
+    clock = {"now": datetime(2026, 1, 1, tzinfo=timezone.utc)}
+    monkeypatch.setattr(attempts_module, "_now_datetime", lambda: clock["now"])
 
     # Wrong, high-confidence answer.
+    attempts.present_item(attempt["id"], position=0)
+    clock["now"] += timedelta(milliseconds=500)
     attempts.record_answer(
         attempt["id"],
         position=0,
@@ -71,7 +79,10 @@ def test_review_queue_records_explainable_reasons_and_can_start_review(
         confirmed=True,
     )
     # Correct but low-confidence answer.
+    clock["now"] += timedelta(seconds=10)
+    attempts.present_item(attempt["id"], position=1)
     second_key = "A" if correct[1]["stable_id"] == "review-a2" else "B"
+    clock["now"] += timedelta(milliseconds=1000)
     attempts.record_answer(
         attempt["id"],
         position=1,
@@ -81,7 +92,10 @@ def test_review_queue_records_explainable_reasons_and_can_start_review(
         confirmed=True,
     )
     # Correct, slow, and hint-assisted answer.
+    clock["now"] += timedelta(seconds=10)
+    attempts.present_item(attempt["id"], position=2)
     attempts.use_hint(attempt["id"], position=2, elapsed_ms=100)
+    clock["now"] += timedelta(milliseconds=3000)
     attempts.record_answer(
         attempt["id"],
         position=2,
@@ -103,12 +117,20 @@ def test_review_queue_records_explainable_reasons_and_can_start_review(
     assert all("correct_option_key" not in item for item in review["items"])
 
 
-def test_analytics_cover_area_confidence_time_hints_and_trend(tmp_path: Path) -> None:
+def test_analytics_cover_area_confidence_time_hints_and_trend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     catalog, attempts, version_ids = _ready_services(tmp_path)
     attempt = attempts.start_attempt(exam_id="exam-review", mode="practice")
     answers = [(0, "A", 90, 500), (1, "A", 40, 1000), (2, "B", 90, 3000)]
-    attempts.use_hint(attempt["id"], position=2, elapsed_ms=100)
+    clock = {"now": datetime(2026, 1, 1, tzinfo=timezone.utc)}
+    monkeypatch.setattr(attempts_module, "_now_datetime", lambda: clock["now"])
     for position, option, confidence, elapsed in answers:
+        clock["now"] += timedelta(seconds=10)
+        attempts.present_item(attempt["id"], position=position)
+        if position == 2:
+            attempts.use_hint(attempt["id"], position=2, elapsed_ms=100)
+        clock["now"] += timedelta(milliseconds=elapsed)
         attempts.record_answer(
             attempt["id"],
             position=position,
@@ -160,6 +182,7 @@ def test_empty_and_partial_history_are_well_defined(tmp_path: Path) -> None:
     }
 
     attempt = attempts.start_attempt(exam_id="exam-review", mode="exam")
+    attempts.present_item(attempt["id"], position=0)
     attempts.record_answer(
         attempt["id"],
         position=0,

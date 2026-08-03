@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
+import deeptutor.tjm.attempts as attempts_module
 from deeptutor.tjm.attempts import (
     AlreadySubmittedError,
     AttemptExpiredError,
     AttemptNotFoundError,
     AttemptService,
+    IdempotencyConflictError,
 )
 from deeptutor.tjm.catalog import CatalogService
 from deeptutor.tjm.domain import (
@@ -114,6 +117,37 @@ def test_inactive_exam_cannot_start_attempt(tmp_path: Path) -> None:
         service.start_attempt(exam_id="exam-attempt", mode="practice")
 
 
+def test_start_attempt_replay_precedes_changed_catalog_and_normalizes_exam_id(
+    tmp_path: Path,
+) -> None:
+    catalog = _catalog(tmp_path)
+    published_ids = _activate(catalog)
+    learning = LearningStore(tmp_path / "learning.db")
+    service = AttemptService(catalog, learning, owner_id="u_alice")
+    first = service.start_attempt(
+        exam_id=" exam-attempt ",
+        mode="exam",
+        idempotency_key="start-before-catalog-change",
+    )
+
+    canonical_replay = service.start_attempt(
+        exam_id="exam-attempt",
+        mode="exam",
+        idempotency_key="start-before-catalog-change",
+    )
+    catalog.retire_question_version(published_ids[0], actor_id="admin-1")
+    changed_catalog_replay = service.start_attempt(
+        exam_id="exam-attempt",
+        mode="exam",
+        idempotency_key="start-before-catalog-change",
+    )
+
+    assert canonical_replay == first
+    assert changed_catalog_replay == first
+    with learning.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 1
+
+
 def test_review_attempt_cannot_bypass_review_queue(tmp_path: Path) -> None:
     catalog = _catalog(tmp_path)
     _activate(catalog)
@@ -121,6 +155,33 @@ def test_review_attempt_cannot_bypass_review_queue(tmp_path: Path) -> None:
 
     with pytest.raises(DomainValidationError, match="unsupported attempt mode"):
         service.start_attempt(exam_id="exam-attempt", mode="review")
+
+
+def test_start_review_replay_precedes_empty_queue_check(tmp_path: Path) -> None:
+    catalog = _catalog(tmp_path)
+    _activate(catalog)
+    learning = LearningStore(tmp_path / "learning.db")
+    service = AttemptService(catalog, learning, owner_id="u_alice")
+    attempt = service.start_attempt(exam_id="exam-attempt", mode="exam")
+    service.submit_attempt(attempt["id"])
+    first = service.start_review_attempt(
+        exam_id="exam-attempt",
+        idempotency_key="review-before-queue-change",
+    )
+    with learning.connect() as conn:
+        conn.execute(
+            "UPDATE review_queue SET status = 'completed', resolved_at = ?",
+            ("2026-01-01T00:00:00Z",),
+        )
+
+    replay = service.start_review_attempt(
+        exam_id="exam-attempt",
+        idempotency_key="review-before-queue-change",
+    )
+
+    assert replay == first
+    with learning.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 2
 
 
 def test_practice_records_append_only_changes_hint_confidence_and_time(tmp_path: Path) -> None:
@@ -133,6 +194,7 @@ def test_practice_records_append_only_changes_hint_confidence_and_time(tmp_path:
     correct = catalog.get_question_version(version_id)["correct_option_key"]
     wrong = "A" if correct != "A" else "B"
 
+    service.present_item(attempt["id"], position=0)
     hint = service.use_hint(attempt["id"], position=0, elapsed_ms=500)
     service.record_answer(
         attempt["id"],
@@ -179,6 +241,369 @@ def test_practice_records_append_only_changes_hint_confidence_and_time(tmp_path:
     assert all(event["created_at"] for event in events)
 
 
+def test_item_presentation_sets_server_authoritative_elapsed_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    catalog = _catalog(tmp_path)
+    _activate(catalog)
+    learning = LearningStore(tmp_path / "alice.db")
+    service = AttemptService(catalog, learning, owner_id="u_alice")
+    clock = {"now": datetime(2026, 1, 1, tzinfo=timezone.utc)}
+    monkeypatch.setattr(attempts_module, "_now_datetime", lambda: clock["now"])
+    attempt = service.start_attempt(exam_id="exam-attempt", mode="practice")
+
+    clock["now"] += timedelta(seconds=5)
+    opened = service.present_item(attempt["id"], position=0)
+    first_presented_at = opened["first_presented_at"]
+    clock["now"] += timedelta(seconds=1)
+    assert service.present_item(attempt["id"], position=0)["first_presented_at"] == (
+        first_presented_at
+    )
+    clock["now"] += timedelta(milliseconds=2500)
+    answered = service.record_answer(
+        attempt["id"],
+        position=0,
+        selected_option_key="B",
+        confidence=80,
+        elapsed_ms=999_999,
+        confirmed=True,
+    )
+
+    assert answered["server_elapsed_ms"] == 3500
+    assert answered["client_active_elapsed_ms"] == 999_999
+    assert answered["first_answered_at"] == answered["final_answered_at"]
+    with learning.connect() as conn:
+        event = conn.execute(
+            """
+            SELECT server_elapsed_ms, client_active_elapsed_ms
+            FROM answer_events
+            WHERE attempt_id = ? AND event_type = 'confirmed'
+            """,
+            (attempt["id"],),
+        ).fetchone()
+        assert dict(event) == {
+            "server_elapsed_ms": 3500,
+            "client_active_elapsed_ms": 999_999,
+        }
+
+
+def test_unpresented_item_rejects_screen_and_voice_interaction(tmp_path: Path) -> None:
+    catalog = _catalog(tmp_path)
+    _activate(catalog)
+    learning = LearningStore(tmp_path / "alice.db")
+    service = AttemptService(catalog, learning, owner_id="u_alice")
+    attempt = service.start_attempt(exam_id="exam-attempt", mode="exam")
+
+    with pytest.raises(InvalidTransitionError, match="opened"):
+        service.record_answer(
+            attempt["id"],
+            position=0,
+            selected_option_key="A",
+            confidence=50,
+            elapsed_ms=100,
+            confirmed=True,
+        )
+    with pytest.raises(InvalidTransitionError, match="opened"):
+        service.record_voice_candidate(attempt["id"], position=0, transcript="1番", elapsed_ms=100)
+    with learning.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM answer_events").fetchone()[0] == 0
+
+
+def test_answer_change_preserves_first_server_time_and_updates_final_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    catalog = _catalog(tmp_path)
+    _activate(catalog)
+    service = AttemptService(catalog, LearningStore(tmp_path / "alice.db"), owner_id="u_alice")
+    clock = {"now": datetime(2026, 1, 1, tzinfo=timezone.utc)}
+    monkeypatch.setattr(attempts_module, "_now_datetime", lambda: clock["now"])
+    attempt = service.start_attempt(exam_id="exam-attempt", mode="exam")
+    service.present_item(attempt["id"], position=0)
+    clock["now"] += timedelta(seconds=2)
+    first = service.record_answer(
+        attempt["id"],
+        position=0,
+        selected_option_key="A",
+        confidence=40,
+        elapsed_ms=20,
+        confirmed=True,
+    )
+    clock["now"] += timedelta(seconds=5)
+    changed = service.record_answer(
+        attempt["id"],
+        position=0,
+        selected_option_key="B",
+        confidence=80,
+        elapsed_ms=999_999,
+        confirmed=True,
+    )
+
+    assert changed["first_answered_at"] == first["first_answered_at"]
+    assert changed["server_elapsed_ms"] == first["server_elapsed_ms"] == 2000
+    assert changed["final_answered_at"] != first["final_answered_at"]
+    assert changed["client_active_elapsed_ms"] == 999_999
+
+
+def test_answer_command_is_idempotent_under_parallel_retries(tmp_path: Path) -> None:
+    catalog = _catalog(tmp_path)
+    _activate(catalog)
+    learning = LearningStore(tmp_path / "alice.db")
+    service = AttemptService(catalog, learning, owner_id="u_alice")
+    attempt = service.start_attempt(exam_id="exam-attempt", mode="exam")
+    service.present_item(attempt["id"], position=0)
+    request = {
+        "position": 0,
+        "selected_option_key": "A",
+        "confidence": 50,
+        "elapsed_ms": 100,
+        "confirmed": True,
+        "idempotency_key": "answer-command-1",
+    }
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(lambda _: service.record_answer(attempt["id"], **request), range(2))
+        )
+
+    assert results[0] == results[1]
+    with learning.connect() as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM answer_events WHERE attempt_id = ?",
+                (attempt["id"],),
+            ).fetchone()[0]
+            == 3
+        )
+        event_group = conn.execute(
+            """
+            SELECT COUNT(DISTINCT client_event_id), MIN(client_event_id), MAX(client_event_id)
+            FROM answer_events WHERE attempt_id = ?
+            """,
+            (attempt["id"],),
+        ).fetchone()
+        assert tuple(event_group) == (1, "answer-command-1", "answer-command-1")
+        assert conn.execute("SELECT COUNT(*) FROM learning_commands").fetchone()[0] == 1
+    with pytest.raises(IdempotencyConflictError):
+        service.record_answer(
+            attempt["id"],
+            **{**request, "selected_option_key": "B"},
+        )
+    restarted = AttemptService(catalog, LearningStore(learning.db_path), owner_id="u_alice")
+    assert restarted.record_answer(attempt["id"], **request) == results[0]
+    with pytest.raises(IdempotencyConflictError):
+        service.use_hint(
+            attempt["id"],
+            position=0,
+            elapsed_ms=100,
+            idempotency_key="answer-command-1",
+        )
+
+
+def test_hint_and_voice_commands_replay_one_logical_event_group(tmp_path: Path) -> None:
+    catalog = _catalog(tmp_path)
+    _activate(catalog)
+    learning = LearningStore(tmp_path / "alice.db")
+    service = AttemptService(catalog, learning, owner_id="u_alice")
+    attempt = service.start_attempt(exam_id="exam-attempt", mode="practice")
+    service.present_item(attempt["id"], position=0)
+
+    first_hint = service.use_hint(
+        attempt["id"], position=0, elapsed_ms=100, idempotency_key="hint-1"
+    )
+    assert (
+        service.use_hint(attempt["id"], position=0, elapsed_ms=100, idempotency_key="hint-1")
+        == first_hint
+    )
+    candidate = service.record_voice_candidate(
+        attempt["id"],
+        position=0,
+        transcript="2番",
+        elapsed_ms=200,
+        idempotency_key="voice-candidate-1",
+    )
+    assert (
+        service.record_voice_candidate(
+            attempt["id"],
+            position=0,
+            transcript="2番",
+            elapsed_ms=200,
+            idempotency_key="voice-candidate-1",
+        )
+        == candidate
+    )
+    confirmed = service.confirm_voice_candidate(
+        attempt["id"],
+        position=0,
+        candidate_id=candidate["candidate_id"],
+        confidence=70,
+        elapsed_ms=300,
+        idempotency_key="voice-confirm-1",
+    )
+    assert (
+        service.confirm_voice_candidate(
+            attempt["id"],
+            position=0,
+            candidate_id=candidate["candidate_id"],
+            confidence=70,
+            elapsed_ms=300,
+            idempotency_key="voice-confirm-1",
+        )
+        == confirmed
+    )
+    with learning.connect() as conn:
+        events = conn.execute(
+            "SELECT event_type, client_event_id FROM answer_events ORDER BY id"
+        ).fetchall()
+        assert [tuple(event) for event in events] == [
+            ("hint", "hint-1"),
+            ("voice_candidate", "voice-candidate-1"),
+            ("voice_confirmed", "voice-confirm-1"),
+        ]
+
+
+def test_practice_answer_is_immutable_after_feedback_reveal(tmp_path: Path) -> None:
+    catalog = _catalog(tmp_path)
+    _activate(catalog)
+    service = AttemptService(catalog, LearningStore(tmp_path / "alice.db"), owner_id="u_alice")
+    attempt = service.start_attempt(exam_id="exam-attempt", mode="practice")
+    service.present_item(attempt["id"], position=0)
+    service.record_answer(
+        attempt["id"],
+        position=0,
+        selected_option_key="A",
+        confidence=50,
+        elapsed_ms=100,
+        confirmed=True,
+    )
+
+    with pytest.raises(InvalidTransitionError, match="immutable"):
+        service.record_answer(
+            attempt["id"],
+            position=0,
+            selected_option_key="B",
+            confidence=90,
+            elapsed_ms=200,
+            confirmed=True,
+        )
+    with pytest.raises(InvalidTransitionError, match="immutable"):
+        service.use_hint(attempt["id"], position=0, elapsed_ms=200)
+
+
+def test_answer_replay_after_submit_returns_original_non_grading_response(tmp_path: Path) -> None:
+    catalog = _catalog(tmp_path)
+    _activate(catalog)
+    service = AttemptService(catalog, LearningStore(tmp_path / "alice.db"), owner_id="u_alice")
+    attempt = service.start_attempt(exam_id="exam-attempt", mode="exam")
+    service.present_item(attempt["id"], position=0)
+    request = {
+        "position": 0,
+        "selected_option_key": "A",
+        "confidence": 50,
+        "elapsed_ms": 100,
+        "confirmed": True,
+        "idempotency_key": "answer-before-submit",
+    }
+    first = service.record_answer(attempt["id"], **request)
+    service.submit_attempt(attempt["id"])
+
+    replay = service.record_answer(attempt["id"], **request)
+
+    assert replay == first
+    assert "correct_option_key" not in replay
+    assert "explanation" not in replay
+    assert "is_correct" not in replay
+
+
+def test_answer_replay_after_deadline_returns_original_and_commits_expiry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    catalog = _catalog(tmp_path)
+    _activate(catalog)
+    learning = LearningStore(tmp_path / "alice.db")
+    service = AttemptService(catalog, learning, owner_id="u_alice")
+    clock = {"now": datetime(2026, 1, 1, tzinfo=timezone.utc)}
+    monkeypatch.setattr(attempts_module, "_now_datetime", lambda: clock["now"])
+    attempt = service.start_attempt(exam_id="exam-attempt", mode="exam")
+    service.present_item(attempt["id"], position=0)
+    request = {
+        "position": 0,
+        "selected_option_key": "A",
+        "confidence": 50,
+        "elapsed_ms": 100,
+        "confirmed": True,
+        "idempotency_key": "answer-replay-at-deadline",
+    }
+    first = service.record_answer(attempt["id"], **request)
+    clock["now"] = datetime.fromisoformat(attempt["deadline_at"].replace("Z", "+00:00"))
+
+    replay = service.record_answer(attempt["id"], **request)
+
+    assert replay == first
+    finalized = service.get_attempt(attempt["id"])
+    assert finalized["status"] == "expired"
+    assert finalized["submitted_at"] == attempt["deadline_at"]
+    with learning.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM learning_commands").fetchone()[0] == 1
+
+
+def test_due_idempotency_conflict_still_commits_expiry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    catalog = _catalog(tmp_path)
+    _activate(catalog)
+    learning = LearningStore(tmp_path / "alice.db")
+    service = AttemptService(catalog, learning, owner_id="u_alice")
+    clock = {"now": datetime(2026, 1, 1, tzinfo=timezone.utc)}
+    monkeypatch.setattr(attempts_module, "_now_datetime", lambda: clock["now"])
+    attempt = service.start_attempt(exam_id="exam-attempt", mode="exam")
+    service.present_item(attempt["id"], position=0)
+    service.record_answer(
+        attempt["id"],
+        position=0,
+        selected_option_key="A",
+        confidence=50,
+        elapsed_ms=100,
+        confirmed=True,
+        idempotency_key="answer-conflict-at-deadline",
+    )
+    clock["now"] = datetime.fromisoformat(attempt["deadline_at"].replace("Z", "+00:00"))
+
+    with pytest.raises(IdempotencyConflictError):
+        service.record_answer(
+            attempt["id"],
+            position=0,
+            selected_option_key="B",
+            confidence=50,
+            elapsed_ms=100,
+            confirmed=True,
+            idempotency_key="answer-conflict-at-deadline",
+        )
+
+    assert service.get_attempt(attempt["id"])["status"] == "expired"
+    with learning.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM review_queue").fetchone()[0] == 3
+
+
+def test_submit_command_replay_returns_original_result_without_duplicate_queue(
+    tmp_path: Path,
+) -> None:
+    catalog = _catalog(tmp_path)
+    _activate(catalog)
+    learning = LearningStore(tmp_path / "alice.db")
+    service = AttemptService(catalog, learning, owner_id="u_alice")
+    attempt = service.start_attempt(exam_id="exam-attempt", mode="exam")
+
+    first = service.submit_attempt(attempt["id"], idempotency_key="submit-command-1")
+    with learning.connect() as conn:
+        first_queue_count = conn.execute("SELECT COUNT(*) FROM review_queue").fetchone()[0]
+    replay = service.submit_attempt(attempt["id"], idempotency_key="submit-command-1")
+
+    assert replay == first
+    with learning.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM review_queue").fetchone()[0] == first_queue_count
+        assert conn.execute("SELECT COUNT(*) FROM learning_commands").fetchone()[0] == 1
+
+
 def test_voice_candidate_requires_explicit_confirmation_before_answer_changes(
     tmp_path: Path,
 ) -> None:
@@ -187,6 +612,7 @@ def test_voice_candidate_requires_explicit_confirmation_before_answer_changes(
     learning = LearningStore(tmp_path / "alice.db")
     service = AttemptService(catalog, learning, owner_id="u_alice")
     attempt = service.start_attempt(exam_id="exam-attempt", mode="practice")
+    service.present_item(attempt["id"], position=0)
 
     candidate = service.record_voice_candidate(
         attempt["id"], position=0, transcript="2番", elapsed_ms=900
@@ -238,6 +664,7 @@ def test_voice_candidate_is_fail_closed_for_ambiguous_or_stale_transcript(tmp_pa
     _activate(catalog)
     service = AttemptService(catalog, LearningStore(tmp_path / "alice.db"), owner_id="u_alice")
     attempt = service.start_attempt(exam_id="exam-attempt", mode="exam")
+    service.present_item(attempt["id"], position=0)
 
     ambiguous = service.record_voice_candidate(
         attempt["id"], position=0, transcript="一番か二番", elapsed_ms=200
@@ -272,6 +699,7 @@ def test_exam_withholds_answer_until_submit_and_rejects_double_submit(tmp_path: 
     service = AttemptService(catalog, LearningStore(tmp_path / "alice.db"), owner_id="u_alice")
     attempt = service.start_attempt(exam_id="exam-attempt", mode="exam")
     first = attempt["items"][0]
+    service.present_item(attempt["id"], position=0)
 
     answered = service.record_answer(
         attempt["id"],
@@ -306,6 +734,7 @@ def test_unknown_choice_creates_no_answer_event(tmp_path: Path) -> None:
     learning = LearningStore(tmp_path / "alice.db")
     service = AttemptService(catalog, learning, owner_id="u_alice")
     attempt = service.start_attempt(exam_id="exam-attempt", mode="practice")
+    service.present_item(attempt["id"], position=0)
 
     with pytest.raises(DomainValidationError, match="choice"):
         service.record_answer(
@@ -318,6 +747,16 @@ def test_unknown_choice_creates_no_answer_event(tmp_path: Path) -> None:
         )
     with learning.connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM answer_events").fetchone()[0] == 0
+
+    with pytest.raises(DomainValidationError, match="SQLite integer"):
+        service.record_answer(
+            attempt["id"],
+            position=0,
+            selected_option_key="A",
+            confidence=50,
+            elapsed_ms=9_223_372_036_854_775_808,
+            confirmed=True,
+        )
 
 
 def test_expired_exam_rejects_new_answers_but_submits_existing_state(tmp_path: Path) -> None:
@@ -342,9 +781,33 @@ def test_expired_exam_rejects_new_answers_but_submits_existing_state(tmp_path: P
             elapsed_ms=999999,
             confirmed=True,
         )
-    submitted = service.submit_attempt(attempt["id"])
-    assert submitted["status"] == "expired"
-    assert submitted["answered_count"] == 0
+    finalized = service.get_attempt(attempt["id"])
+    assert finalized["status"] == "expired"
+    assert finalized["answered_count"] == 0
+
+
+def test_deadline_is_finalized_at_the_exact_instant_and_only_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    catalog = _catalog(tmp_path)
+    _activate(catalog)
+    learning = LearningStore(tmp_path / "alice.db")
+    service = AttemptService(catalog, learning, owner_id="u_alice")
+    clock = {"now": datetime(2026, 1, 1, tzinfo=timezone.utc)}
+    monkeypatch.setattr(attempts_module, "_now_datetime", lambda: clock["now"])
+    attempt = service.start_attempt(exam_id="exam-attempt", mode="exam")
+    deadline = datetime.fromisoformat(attempt["deadline_at"].replace("Z", "+00:00"))
+    clock["now"] = deadline
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        get_future = executor.submit(service.get_attempt, attempt["id"])
+        submit_future = executor.submit(service.submit_attempt, attempt["id"])
+        results = [get_future.result(), submit_future.result()]
+
+    assert {result["status"] for result in results} == {"expired"}
+    assert all(result["submitted_at"] == attempt["deadline_at"] for result in results)
+    with learning.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM review_queue").fetchone()[0] == 3
 
 
 def test_attempt_id_is_not_visible_in_another_user_database(tmp_path: Path) -> None:

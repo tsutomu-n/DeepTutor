@@ -76,9 +76,10 @@ def test_learning_store_initializes_only_user_learning_schema(tmp_path: Path) ->
         "attempts",
         "attempt_items",
         "answer_events",
+        "learning_commands",
         "review_queue",
     }
-    assert _migration_versions(db_path) == [1]
+    assert _migration_versions(db_path) == [1, 2]
 
 
 def test_catalog_store_serializes_concurrent_initialization(tmp_path: Path) -> None:
@@ -180,6 +181,78 @@ def test_catalog_v3_migrates_legacy_content_without_binding_old_review(tmp_path:
             )
         with pytest.raises(sqlite3.IntegrityError, match="immutable"):
             conn.execute("DELETE FROM review_events WHERE id = ?", (legacy_event_id,))
+
+
+def test_learning_v2_preserves_client_metrics_without_inventing_server_time(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "legacy-learning.db"
+
+    class LegacyLearningStore(LearningStore):
+        migrations = LearningStore.migrations[:1]
+
+    legacy = LegacyLearningStore(db_path)
+    with legacy.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO attempts (
+                id, exam_id, mode, status, exam_snapshot_json, started_at
+            ) VALUES ('legacy-attempt', 'exam', 'practice', 'in_progress', '{}',
+                      '2026-01-01T00:00:00Z')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO attempt_items (
+                attempt_id, position, question_version_id, area, opened_at,
+                answered_at, confirmed_option_key, elapsed_ms
+            ) VALUES ('legacy-attempt', 0, 'qv-1', 'area',
+                      '2026-01-01T00:00:01Z', '2026-01-01T00:00:02Z', 'A', 9000)
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO answer_events (
+                attempt_id, position, event_type, option_key, elapsed_ms, created_at
+            ) VALUES ('legacy-attempt', 0, 'confirmed', 'A', 9000,
+                      '2026-01-01T00:00:02Z')
+            """
+        )
+
+    migrated = LearningStore(db_path)
+
+    assert _migration_versions(db_path) == [1, 2]
+    with migrated.connect() as conn:
+        item = conn.execute(
+            """
+            SELECT first_presented_at, first_answered_at, final_answered_at,
+                   server_elapsed_ms, client_active_elapsed_ms
+            FROM attempt_items WHERE attempt_id = 'legacy-attempt'
+            """
+        ).fetchone()
+        event = conn.execute(
+            """
+            SELECT server_elapsed_ms, client_active_elapsed_ms
+            FROM answer_events WHERE attempt_id = 'legacy-attempt'
+            """
+        ).fetchone()
+        assert dict(item) == {
+            "first_presented_at": None,
+            "first_answered_at": None,
+            "final_answered_at": "2026-01-01T00:00:02Z",
+            "server_elapsed_ms": None,
+            "client_active_elapsed_ms": 9000,
+        }
+        assert dict(event) == {
+            "server_elapsed_ms": None,
+            "client_active_elapsed_ms": 9000,
+        }
+        assert conn.execute("SELECT COUNT(*) FROM learning_commands").fetchone()[0] == 0
+        event_id = conn.execute("SELECT id FROM answer_events").fetchone()[0]
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            conn.execute("UPDATE answer_events SET option_key = 'B' WHERE id = ?", (event_id,))
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            conn.execute("DELETE FROM answer_events WHERE id = ?", (event_id,))
 
 
 def test_tjm_stores_enable_foreign_keys_on_every_connection(tmp_path: Path) -> None:

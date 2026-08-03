@@ -1,6 +1,6 @@
 # TJM 実装計画
 
-更新: 2026-08-03_12:45 (Asia/Tokyo)
+更新: 2026-08-03_13:27 (Asia/Tokyo)
 
 ## 1. 状態
 
@@ -446,6 +446,18 @@ Webは正式正解をローカル判定せず、practiceの確定応答または
 | 関連検証 | `pytest -q tests/tjm tests/api/test_tjm_router.py` | 66 passed、211 warnings |
 | Web検証 | `npm run test:node`; `npm exec -- tsc --noEmit`; 対象`eslint` | 377 passed、型検査・lint成功。legacy公開版だけを再review対象へ含め、編集・reject・publishを許可しないaction matrixをbehavior testで固定 |
 | 静的検査 | 対象`ruff check`、`ruff format --check`、JSON parse、`git diff --check` | 成功 |
+| Catalog修復commit | `b48301dc fix: bind TJM reviews to content revisions` | `origin/tjm/implementation`へpush済み。PR #1はDraftのまま |
+| Learning migration v2 | legacy v1 DBから`LearningStore`を再初期化 | `first/final`回答時刻、server/client時間、`learning_commands`を追加。旧client時間だけを診断値へ移し、旧server時刻は推測せず`NULL` |
+| 正式計時 | `POST /attempts/{id}/items/{position}/open`、`BEGIN IMMEDIATE`後のUTC採時 | open応答までWebで本文・選択肢を隠し、初回表示と初回確定の差を`server_elapsed_ms`へ保存。client値は診断値に限定 |
+| 期限確定 | GET、回答、ヒント、音声、提出、履歴、分析、復習入口 | `now >= deadline`で同一transactionの決定論的採点を一度だけ実行し、`submitted_at=deadline_at`で`expired`へ確定 |
+| command冪等性 | `learning_commands`のprimary key、request hash、保存済みresponse | 回答・ヒント・音声候補/確定/取消・提出・通常/復習開始をexact replay。同じkeyの別payloadを409。catalog/queue変化より先に開始responseを再生 |
+| Web再送 | `TjmCommandLedger`、`Idempotency-Key` | logical actionのkeyとbodyを成功まで固定し、pending commandを同一tabの`sessionStorage`へ保存。再読込後も同一要求を再送 |
+| 回答変更境界 | serviceと`canAnswerTjmItem()` | practice/reviewは正解開示後に不変、examは提出前に変更可。音声処理中の別問題移動・画面操作をロック |
+| 音声・期限競合 | 録音開始時attempt/position ref、期限0 GET polling | STT結果を録音開始問題へ固定し、期限時にmic/TTSと確認modalを閉じる。open/command 409はGETで最終状態を回復 |
+| Learning対象検証 | `pytest -q tests/tjm/test_storage.py tests/tjm/test_attempts.py tests/tjm/test_review_analytics.py tests/api/test_tjm_router.py` | 49 passed、211 warnings。期限ちょうど、並行GET/submit、response loss replay、service再起動、開始前提変化を含む |
+| TJM全体回帰 | `pytest -q tests/tjm tests/api/test_tjm_router.py` | 83 passed、211 warnings |
+| Web回帰 | `npm run test:node`; `npx tsc --noEmit`; 対象`eslint` | 386 passed、型検査・lint成功。transport、再読込ledger、操作可否のbehavior testを含む |
+| Learning静的検査 | 対象`ruff check`、`ruff format --check`、`git diff --check` | 成功 |
 
 ## 17. 既存リスクと今回の扱い
 

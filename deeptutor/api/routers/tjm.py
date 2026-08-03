@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any, Literal, Never
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, UploadFile, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -310,9 +310,16 @@ def start_attempt(
     request: StartAttemptRequest,
     _: TokenPayload | None = Depends(require_auth),
     attempts: AttemptService = Depends(get_attempt_service),
+    idempotency_key: str | None = Header(
+        default=None, alias="Idempotency-Key", min_length=1, max_length=200
+    ),
 ) -> dict[str, Any]:
     try:
-        return attempts.start_attempt(exam_id=request.exam_id, mode=request.mode)
+        return attempts.start_attempt(
+            exam_id=request.exam_id,
+            mode=request.mode,
+            idempotency_key=idempotency_key,
+        )
     except (DomainValidationError, InvalidTransitionError) as exc:
         _raise_http(exc)
 
@@ -329,12 +336,28 @@ def get_attempt(
         _raise_http(exc)
 
 
+@router.post("/attempts/{attempt_id}/items/{position}/open")
+def present_attempt_item(
+    attempt_id: str,
+    position: int,
+    _: TokenPayload | None = Depends(require_auth),
+    attempts: AttemptService = Depends(get_attempt_service),
+) -> dict[str, Any]:
+    try:
+        return attempts.present_item(attempt_id, position=position)
+    except (DomainValidationError, InvalidTransitionError) as exc:
+        _raise_http(exc)
+
+
 @router.post("/attempts/{attempt_id}/answers")
 def answer_attempt(
     attempt_id: str,
     request: AnswerRequest,
     _: TokenPayload | None = Depends(require_auth),
     attempts: AttemptService = Depends(get_attempt_service),
+    idempotency_key: str | None = Header(
+        default=None, alias="Idempotency-Key", min_length=1, max_length=200
+    ),
 ) -> dict[str, Any]:
     try:
         return attempts.record_answer(
@@ -345,6 +368,7 @@ def answer_attempt(
             elapsed_ms=request.elapsed_ms,
             confirmed=request.confirmed,
             client_created_at=request.client_created_at,
+            idempotency_key=idempotency_key,
         )
     except (DomainValidationError, InvalidTransitionError) as exc:
         _raise_http(exc)
@@ -357,9 +381,17 @@ def use_hint(
     request: HintRequest,
     _: TokenPayload | None = Depends(require_auth),
     attempts: AttemptService = Depends(get_attempt_service),
+    idempotency_key: str | None = Header(
+        default=None, alias="Idempotency-Key", min_length=1, max_length=200
+    ),
 ) -> dict[str, Any]:
     try:
-        return attempts.use_hint(attempt_id, position=position, elapsed_ms=request.elapsed_ms)
+        return attempts.use_hint(
+            attempt_id,
+            position=position,
+            elapsed_ms=request.elapsed_ms,
+            idempotency_key=idempotency_key,
+        )
     except (DomainValidationError, InvalidTransitionError) as exc:
         _raise_http(exc)
 
@@ -374,6 +406,9 @@ def record_voice_candidate(
     request: VoiceCandidateRequest,
     _: TokenPayload | None = Depends(require_auth),
     attempts: AttemptService = Depends(get_attempt_service),
+    idempotency_key: str | None = Header(
+        default=None, alias="Idempotency-Key", min_length=1, max_length=200
+    ),
 ) -> dict[str, Any]:
     try:
         return attempts.record_voice_candidate(
@@ -381,6 +416,7 @@ def record_voice_candidate(
             position=position,
             transcript=request.transcript,
             elapsed_ms=request.elapsed_ms,
+            idempotency_key=idempotency_key,
         )
     except (DomainValidationError, InvalidTransitionError) as exc:
         _raise_http(exc)
@@ -394,6 +430,9 @@ def confirm_voice_candidate(
     request: VoiceConfirmRequest,
     _: TokenPayload | None = Depends(require_auth),
     attempts: AttemptService = Depends(get_attempt_service),
+    idempotency_key: str | None = Header(
+        default=None, alias="Idempotency-Key", min_length=1, max_length=200
+    ),
 ) -> dict[str, Any]:
     try:
         return attempts.confirm_voice_candidate(
@@ -402,6 +441,7 @@ def confirm_voice_candidate(
             candidate_id=candidate_id,
             confidence=request.confidence,
             elapsed_ms=request.elapsed_ms,
+            idempotency_key=idempotency_key,
         )
     except (DomainValidationError, InvalidTransitionError) as exc:
         _raise_http(exc)
@@ -414,10 +454,16 @@ def cancel_voice_candidate(
     candidate_id: int,
     _: TokenPayload | None = Depends(require_auth),
     attempts: AttemptService = Depends(get_attempt_service),
+    idempotency_key: str | None = Header(
+        default=None, alias="Idempotency-Key", min_length=1, max_length=200
+    ),
 ) -> dict[str, Any]:
     try:
         return attempts.cancel_voice_candidate(
-            attempt_id, position=position, candidate_id=candidate_id
+            attempt_id,
+            position=position,
+            candidate_id=candidate_id,
+            idempotency_key=idempotency_key,
         )
     except (DomainValidationError, InvalidTransitionError) as exc:
         _raise_http(exc)
@@ -428,9 +474,12 @@ def submit_attempt(
     attempt_id: str,
     _: TokenPayload | None = Depends(require_auth),
     attempts: AttemptService = Depends(get_attempt_service),
+    idempotency_key: str | None = Header(
+        default=None, alias="Idempotency-Key", min_length=1, max_length=200
+    ),
 ) -> dict[str, Any]:
     try:
-        return attempts.submit_attempt(attempt_id)
+        return attempts.submit_attempt(attempt_id, idempotency_key=idempotency_key)
     except (DomainValidationError, InvalidTransitionError) as exc:
         _raise_http(exc)
 
@@ -462,9 +511,16 @@ def start_review_attempt(
     request: ReviewAttemptRequest,
     _: TokenPayload | None = Depends(require_auth),
     attempts: AttemptService = Depends(get_attempt_service),
+    idempotency_key: str | None = Header(
+        default=None, alias="Idempotency-Key", min_length=1, max_length=200
+    ),
 ) -> dict[str, Any]:
     try:
-        return attempts.start_review_attempt(exam_id=request.exam_id, limit=request.limit)
+        return attempts.start_review_attempt(
+            exam_id=request.exam_id,
+            limit=request.limit,
+            idempotency_key=idempotency_key,
+        )
     except (DomainValidationError, InvalidTransitionError) as exc:
         _raise_http(exc)
 
