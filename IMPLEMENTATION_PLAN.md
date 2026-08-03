@@ -1,6 +1,6 @@
 # TJM 実装計画
 
-更新: 2026-08-03_15:03 (Asia/Tokyo)
+更新: 2026-08-03_15:33 (Asia/Tokyo)
 
 ## 1. 状態
 
@@ -478,12 +478,19 @@ Webは正式正解をローカル判定せず、practiceの確定応答または
 | 認可・横断漏洩回帰 | `pytest -q tests/tjm tests/api/test_tjm_router.py` | 112 passed、211 warnings。利用者path失敗時のadmin DB非作成、auth無効互換、試験中の正解field非露出、旧exam直接GET・submit再送、履歴・分析・復習queue遮断、期限ちょうどの直接/並行確定、legacy migrationを含む |
 | 認可静的検査 | 対象`ruff check`、`git diff --check` | 成功 |
 | 認可独立レビュー | P0/P1再監査、期限競合と旧exam直接経路の追補 | 追補2件を修正後、未解決P0/P1なし。reviewer側では既存`CatalogStore`並行初期化のWAL lockを3回中1回観測したが、本作業側の同一test 10回は全成功。CP-14/最終gateで再発時はflakyとして放置せず停止・修復する |
+| Cookie更新のOrigin契約 | `require_authenticated_write_same_origin`、`require_admin_same_origin` | 認証有効かつCookieだけを使う全TJM mutation 19本で、raw header上の単一Originと具体的allowlistの完全一致を必須化。単一の認証済みBearerとauth無効構成は互換維持し、重複Origin、欠落、`null`、suffix/path/scheme違いを403にする |
+| credentialed CORS | `_build_cors_settings()`、実`CORSMiddleware` test | 認証有効時の設定値`*`/`null`を起動時の設定エラーにし、共有origin helperからも除外。Cookie付き未許可Originの通常要求にACAOを付けず、preflightを400にすることを実middlewareで確認 |
+| CORS設定保存 | `PUT /api/v1/settings/network` | 認証有効時は`*`/`null`を保存前に422で拒否し、backend/frontend portと既存allowlistを変更しない。禁止設定の遅延保存による次回起動不能を防止 |
+| Next proxy互換 | 実repoのNext dev server、Chrome、echo backendでJSON POST・bodyless POST・PATCH・multipart POST | frontend Origin、Cookie、body、methodがFastAPI側まで保持されることを確認。実測環境はNode 24/Chrome 150であり、Node 22 DockerとTLS reverse proxyはCP-14で再確認する |
+| CSRF/CORS回帰 | `pytest -q tests/tjm tests/api/test_tjm_router.py tests/api/test_cors_settings.py tests/api/test_settings_router.py tests/api/test_auth_contextvar.py tests/api/test_auth_logout_cookie.py` | 160 passed、215 warnings。管理者・学習者Cookie、Bearer、auth無効、全mutation route集合、実CORS middleware、設定保存拒否を含む。対象`ruff check`、`ruff format --check`、`git diff --check`も成功 |
+| CSRF/CORS最終独立レビュー | 共通unsafe-origin判定、effective auth、保存前拒否、全mutation集合の再監査 | 未解決P0/P1と設定/API回帰なし。reviewer focused再実行11 passed |
 
 ## 17. 既存リスクと今回の扱い
 
 - catalogは共有DB、learningは利用者別DBであるため、問題廃止と全利用者queue取消を単一transactionで即時反映する構造ではない。現在の契約は「各利用者の次のTJM操作より前に必ず同期し、その応答では旧版を有効扱いしない」である。管理操作直後に全利用者DBを物理更新する要件へ変える場合は、DB topologyまたは調整jobの別設計を停止条件として扱う。
 - 認可の独立監査で確認したTJM利用者pathのadmin fallbackと、active exam中に別attempt/historyから同一問題のfeedbackを取得する経路は閉じた。ただしこれは同時API経路の遮断であり、利用者が試験前に知った正解、保存済み画面、別端末の記憶を防ぐ試験監督機能ではない。移行前から同一試験に複数のactive examがあるDBは推測で片方を終了せず保持し、新規開始だけをfail-closedにした。汎用`get_path_service()`のfallbackはTJM外に残る。
-- cookie認証のTJM管理者更新routeにはCSRF/Origin検査がまだない。TJM管理者mutationへ限定したsame-origin依存を次の修正単位とし、Bearerとauth無効構成は互換維持する。Next/reverse proxy経由で`Origin`がFastAPIまで保持されない場合は検査を緩めず、配備契約を停止して確定する。
+- cookie認証の全TJM更新routeは単一かつ明示allowlist上のOriginを必須とし、認証有効時のCORS `*`/`null`設定も拒否した。ただし同じ保護をTJM外の更新routeへ一括適用したとは主張しない。アプリ全体のCookie/CSRF監査は別範囲であり、Node 22 DockerとTLS reverse proxyでOriginが保持されない場合は検査を緩めず、配備を停止して構成を修正する。
+- 認証有効時もlocalhost frontend用のOriginは既定allowlistに残る。悪用には利用者端末上の悪意あるlocalhost originが別途必要で、独立監査ではP1未満と判定したが、remote-only配備でlocalhostを信頼しない構成を選べるようにするかはCP-14の配備契約で再評価する。
 - npm auditは現在high 3件、moderate 2件、critical 0件である。自動修正が破壊的downgradeになるという過去の記録は今回の再確認で裏付け切れなかったため撤回する。advisoryごとの導入差分、production到達性、修正可否はCP-14で確定する。
 - CP-04時点ではPython lockfileがなく範囲依存の最新値を解決した。現在は`uv.lock`を追加したが、Dockerのrequirements経路はまだ同一lockを消費しない。
 - Dockerも `pip install -r requirements.txt` で当日最新を解決し、Python 3.11環境ではローカルPython 3.12環境と一部の解決版が異なる。production build成功は確認したが、将来の同一解決を保証する証拠ではない。

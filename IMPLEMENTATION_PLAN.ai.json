@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "updated_at": "2026-08-03_15:03",
+  "updated_at": "2026-08-03_15:33",
   "timezone": "Asia/Tokyo",
   "status": "in_progress",
   "current_checkpoint": "CP-13",
@@ -444,7 +444,7 @@
         "ruff_and_diff_check": "passed"
       },
       "authorization_and_leakage": {
-        "status": "in_progress",
+        "status": "completed",
         "learning_schema_version": 4,
         "completed_controls": [
           "get_attempt_service depends on require_auth and fails closed when request user context is absent",
@@ -452,22 +452,25 @@
           "an active exam blocks new same-exam attempts at service and SQLite trigger boundaries",
           "pre-existing practice, review, and finalized exam attempts are frozen only while another same-exam exam is active",
           "same-exam direct reads, prior submit replay, history, analytics, review queue, and idempotent feedback replay cannot expose grading data during an active exam",
-          "expired exams are finalized before the start guard, direct submit at the exact deadline remains atomic, and parallel exam starts create one active attempt"
+          "expired exams are finalized before the start guard, direct submit at the exact deadline remains atomic, and parallel exam starts create one active attempt",
+          "all 19 TJM mutations require one exact allowlisted Origin for cookie-only authentication while validated single-Bearer and auth-disabled clients retain compatibility",
+          "authentication-enabled CORS rejects configured wildcard or opaque origins at startup and never passes them to credentialed CORSMiddleware",
+          "the network settings API rejects wildcard or opaque credentialed origins before saving and leaves the existing network configuration unchanged"
         ],
         "migration_policy": "Learning v4 preserves pre-existing duplicate active exams instead of guessing which one to finalize; it blocks every new same-exam attempt until no active exam remains",
         "scope_limit": "this prevents concurrent API answer-oracle paths in a self-study product; it is not proctoring and cannot erase answers learned or saved before exam start",
         "outside_scope": "the generic get_path_service fallback remains available outside TJM and requires a separate application-wide audit",
-        "remaining_findings": [
-          "cookie-authenticated state-changing TJM admin routes have no explicit CSRF or Origin validation"
-        ],
+        "remaining_findings": [],
         "evidence": {
-          "tjm_api_tests": {"passed": 112, "warnings": 211},
-          "independent_review": "no unresolved P0 or P1 after prior-exam direct-read and exact-deadline submit fixes",
+          "tjm_api_tests": {"passed": 160, "warnings": 215},
+          "independent_review": "initial review found credentialed wildcard CORS and unguarded learner mutations; re-review found delayed restart failure from unsafe network-settings writes; after all three fixes the final read-only review found no unresolved P0/P1 or settings/API regression and reran 11 focused tests successfully",
+          "cors_middleware": "cookie request from an unlisted Origin receives no ACAO and its preflight fails 400; an explicitly listed concrete Origin succeeds",
+          "network_settings": "when authentication is enabled, wildcard and opaque origins fail 422 before persistence and prior ports and allowlist remain unchanged",
+          "next_proxy_smoke": "the repository Next dev server preserved frontend Origin, cookie, method, and body for JSON POST, bodyless POST, PATCH, and multipart POST under Node 24 and Chrome 150; Node 22 Docker and TLS remain CP-14 evidence",
           "catalog_concurrent_init_probe": "reviewer observed one WAL-lock failure in three runs outside this diff; primary reran the exact test ten times successfully, so recurrence remains unconfirmed",
           "ruff_and_diff_check": "passed"
         },
         "next_order": [
-          "csrf_origin_validation",
           "official_and_target_score_results"
         ]
       }
@@ -501,7 +504,8 @@
   ],
   "residual_risks": [
     "catalog retirement is reconciled into each per-user learning DB before that user's next TJM response, not atomically fanned out to every inactive user DB",
-    "cookie-authenticated TJM admin mutations still require fail-closed Origin validation; Next and reverse-proxy Origin forwarding must be verified before claiming compatibility",
+    "TJM cookie mutations are origin-guarded, but non-TJM state-changing cookie routes have not received an application-wide CSRF audit; Node 22 Docker and TLS reverse-proxy Origin forwarding remain CP-14 evidence",
+    "localhost frontend origins remain trusted when authentication is enabled; independent review rated exploitation as below P1 because it additionally requires a malicious localhost origin, and remote-only deployment policy remains a CP-14 decision",
     "Learning v4 preserves pre-existing duplicate active exams without guessing, and the active-exam guard is a concurrent API secrecy control rather than proctoring",
     "the generic get_path_service admin fallback remains outside TJM and is not closed application-wide",
     "npm audit remains at high 3 and moderate 2; advisory reachability and fixes require CP-14 evidence",

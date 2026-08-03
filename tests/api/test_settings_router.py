@@ -5,6 +5,7 @@ import json
 from types import SimpleNamespace
 from typing import Any
 
+from fastapi import HTTPException
 import pytest
 
 from deeptutor.api.routers import settings as settings_router
@@ -238,6 +239,42 @@ async def test_network_settings_roundtrip_normalizes_cors_origins(
     ]
     assert response["effective"]["cors_mode"] == "explicit"
     assert response["auth"]["cross_site_cookie_ready"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unsafe_origin", ["*", "null"])
+async def test_network_settings_rejects_unsafe_credentialed_cors_without_saving(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    unsafe_origin: str,
+) -> None:
+    service = RuntimeSettingsService(tmp_path / "settings", process_env={})
+    service.save_system(
+        {
+            "backend_port": 8001,
+            "frontend_port": 3782,
+            "cors_origins": ["https://before.example.com"],
+        }
+    )
+    service.save_auth({"enabled": True, "cookie_secure": True})
+    monkeypatch.setattr(settings_router, "get_runtime_settings_service", lambda: service)
+    payload = settings_router.NetworkSettingsUpdate(
+        backend_port=8101,
+        frontend_port=3882,
+        cors_origins=[unsafe_origin],
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        await settings_router.update_network_settings(payload)
+
+    assert raised.value.status_code == 422
+    assert raised.value.detail == (
+        "Authentication-enabled credentialed CORS requires concrete HTTP(S) origins"
+    )
+    stored = service.load_system(include_process_overrides=False)
+    assert stored["backend_port"] == 8001
+    assert stored["frontend_port"] == 3782
+    assert stored["cors_origins"] == ["https://before.example.com"]
 
 
 @pytest.mark.asyncio

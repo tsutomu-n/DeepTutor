@@ -9,7 +9,11 @@ import pytest
 
 from deeptutor.api.routers import auth as auth_router
 from deeptutor.api.routers import tjm
-from deeptutor.api.routers.auth import require_admin, require_auth
+from deeptutor.api.routers.auth import (
+    require_admin,
+    require_admin_same_origin,
+    require_auth,
+)
 from deeptutor.multi_user import paths as multi_user_paths
 from deeptutor.services.auth import TokenPayload
 from deeptutor.services.path_service import PathService
@@ -30,6 +34,9 @@ def admin_client(catalog: CatalogService) -> TestClient:
     app.include_router(tjm.router, prefix="/api/v1/tjm")
     app.dependency_overrides[tjm.get_catalog_service] = lambda: catalog
     app.dependency_overrides[require_admin] = lambda: TokenPayload(
+        username="admin", role="admin", user_id="admin-1"
+    )
+    app.dependency_overrides[require_admin_same_origin] = lambda: TokenPayload(
         username="admin", role="admin", user_id="admin-1"
     )
     return TestClient(app)
@@ -615,6 +622,304 @@ def test_active_exam_closes_same_exam_feedback_routes_until_submit(
     resumed = learner_client.get(f"/api/v1/tjm/attempts/{practice_id}")
     assert resumed.status_code == 200
     assert resumed.json()["items"][0]["correct_option_key"] == "B"
+
+
+def test_tjm_admin_cookie_mutations_require_one_allowed_origin(
+    catalog: CatalogService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    allowed_origin = "https://learn.example.com"
+    monkeypatch.setattr(auth_router, "AUTH_ENABLED", True)
+    monkeypatch.setattr(
+        auth_router,
+        "decode_token",
+        lambda token: (
+            TokenPayload(username="admin", role="admin", user_id="admin-1")
+            if token == "cookie-admin"
+            else None
+        ),
+    )
+    monkeypatch.setattr(
+        auth_router,
+        "load_system_settings",
+        lambda: {
+            "frontend_port": 3782,
+            "cors_origin": "",
+            "cors_origins": ["*", allowed_origin],
+        },
+        raising=False,
+    )
+    app = FastAPI()
+    app.include_router(tjm.router, prefix="/api/v1/tjm")
+    app.dependency_overrides[tjm.get_catalog_service] = lambda: catalog
+
+    with TestClient(app) as client:
+        client.cookies.set("dt_token", "cookie-admin")
+        for headers in (
+            None,
+            {"Origin": "null"},
+            {"Origin": "https://evil.example.com"},
+            {"Origin": "https://learn.example.com.evil"},
+            {"Origin": "https://learn.example.com/path"},
+            {"Origin": "https://learn.example.com/"},
+            {"Origin": "http://learn.example.com"},
+        ):
+            response = client.post(
+                "/api/v1/tjm/exams",
+                json=_exam_payload(),
+                headers=headers,
+            )
+            assert response.status_code == 403
+        duplicate = client.post(
+            "/api/v1/tjm/exams",
+            json=_exam_payload(),
+            headers=[("Origin", allowed_origin), ("Origin", allowed_origin)],
+        )
+        assert duplicate.status_code == 403
+        assert catalog.list_exams() == []
+        admin_get = client.get("/api/v1/tjm/review/questions")
+        assert admin_get.status_code == 200
+
+        created = client.post(
+            "/api/v1/tjm/exams",
+            json=_exam_payload(),
+            headers={"Origin": allowed_origin},
+        )
+        assert created.status_code == 201
+        patched = client.patch(
+            "/api/v1/tjm/exams/exam-api",
+            json={**_exam_payload(), "title": "Origin checked"},
+            headers={"Origin": allowed_origin},
+        )
+        assert patched.status_code == 200
+        imported = client.post(
+            "/api/v1/tjm/imports",
+            data={"import_format": "json"},
+            files={
+                "file": (
+                    "questions.json",
+                    json.dumps(_question_payload()).encode(),
+                    "application/json",
+                )
+            },
+            headers={"Origin": allowed_origin},
+        )
+        assert imported.status_code == 201
+        version_id = catalog.list_question_versions(status="draft")[0]["id"]
+        reviewed = client.post(
+            f"/api/v1/tjm/review/questions/{version_id}/review",
+            json={"note": "origin checked"},
+            headers={"Origin": allowed_origin},
+        )
+        assert reviewed.status_code == 200
+        published = client.post(
+            f"/api/v1/tjm/review/questions/{version_id}/publish",
+            headers={"Origin": allowed_origin},
+        )
+        assert published.status_code == 200
+        activated = client.post(
+            "/api/v1/tjm/exams/exam-api/activate",
+            headers={"Origin": allowed_origin},
+        )
+        assert activated.status_code == 200
+
+
+def test_tjm_admin_bearer_and_auth_disabled_clients_keep_origin_compatibility(
+    catalog: CatalogService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def decode(token: str) -> TokenPayload | None:
+        if token in {"cookie-admin", "bearer-admin"}:
+            return TokenPayload(username="admin", role="admin", user_id="admin-1")
+        if token == "bearer-user":
+            return TokenPayload(username="alice", role="user", user_id="u_alice")
+        return None
+
+    monkeypatch.setattr(auth_router, "AUTH_ENABLED", True)
+    monkeypatch.setattr(auth_router, "decode_token", decode)
+    monkeypatch.setattr(
+        auth_router,
+        "load_system_settings",
+        lambda: {"frontend_port": 3782, "cors_origin": "", "cors_origins": []},
+        raising=False,
+    )
+    app = FastAPI()
+    app.include_router(tjm.router, prefix="/api/v1/tjm")
+    app.dependency_overrides[tjm.get_catalog_service] = lambda: catalog
+
+    with TestClient(app) as client:
+        client.cookies.set("dt_token", "cookie-admin")
+        invalid_bearer = client.post(
+            "/api/v1/tjm/exams",
+            json=_exam_payload(),
+            headers={"Authorization": "Bearer invalid"},
+        )
+        assert invalid_bearer.status_code == 401
+        non_admin = client.post(
+            "/api/v1/tjm/exams",
+            json=_exam_payload(),
+            headers={"Authorization": "Bearer bearer-user"},
+        )
+        assert non_admin.status_code == 403
+        client.cookies.set("dt_token", "bearer-user")
+        non_admin_cookie = client.post(
+            "/api/v1/tjm/exams",
+            json=_exam_payload(),
+            headers={"Origin": "http://localhost:3782"},
+        )
+        assert non_admin_cookie.status_code == 403
+        client.cookies.set("dt_token", "cookie-admin")
+        bearer = client.post(
+            "/api/v1/tjm/exams",
+            json=_exam_payload(),
+            headers={
+                "Authorization": "Bearer bearer-admin",
+                "Origin": "https://evil.example.com",
+            },
+        )
+        assert bearer.status_code == 201
+
+    auth_disabled_catalog = CatalogService(CatalogStore(catalog.store.db_path.parent / "local.db"))
+    monkeypatch.setattr(auth_router, "AUTH_ENABLED", False)
+    local_app = FastAPI()
+    local_app.include_router(tjm.router, prefix="/api/v1/tjm")
+    local_app.dependency_overrides[tjm.get_catalog_service] = lambda: auth_disabled_catalog
+    with TestClient(local_app) as client:
+        local = client.post("/api/v1/tjm/exams", json={**_exam_payload(), "id": "local-exam"})
+    assert local.status_code == 201
+
+
+def test_tjm_learner_cookie_mutations_require_allowed_origin(
+    catalog: CatalogService,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    allowed_origin = "https://learn.example.com"
+    _active_catalog(catalog)
+    attempts = AttemptService(
+        catalog,
+        LearningStore(tmp_path / "csrf-learner.db"),
+        owner_id="u_learner",
+    )
+    monkeypatch.setattr(auth_router, "AUTH_ENABLED", True)
+    monkeypatch.setattr(
+        auth_router,
+        "decode_token",
+        lambda token: (
+            TokenPayload(username="learner", role="user", user_id="u_learner")
+            if token in {"cookie-user", "bearer-user"}
+            else None
+        ),
+    )
+    monkeypatch.setattr(
+        auth_router,
+        "load_system_settings",
+        lambda: {
+            "frontend_port": 3782,
+            "cors_origin": allowed_origin,
+            "cors_origins": [],
+        },
+        raising=False,
+    )
+    app = FastAPI()
+    app.include_router(tjm.router, prefix="/api/v1/tjm")
+    app.dependency_overrides[tjm.get_catalog_service] = lambda: catalog
+    app.dependency_overrides[tjm.get_attempt_service] = lambda: attempts
+
+    with TestClient(app) as client:
+        client.cookies.set("dt_token", "cookie-user")
+        missing = client.post(
+            "/api/v1/tjm/attempts",
+            json={"exam_id": "exam-learn", "mode": "practice"},
+        )
+        evil = client.post(
+            "/api/v1/tjm/attempts",
+            json={"exam_id": "exam-learn", "mode": "practice"},
+            headers={"Origin": "https://evil.example.com"},
+        )
+        allowed = client.post(
+            "/api/v1/tjm/attempts",
+            json={"exam_id": "exam-learn", "mode": "practice"},
+            headers={"Origin": allowed_origin},
+        )
+        attempt_id = allowed.json()["id"]
+        open_evil = client.post(
+            f"/api/v1/tjm/attempts/{attempt_id}/items/0/open",
+            headers={"Origin": "https://evil.example.com"},
+        )
+        open_allowed = client.post(
+            f"/api/v1/tjm/attempts/{attempt_id}/items/0/open",
+            headers={"Origin": allowed_origin},
+        )
+        bearer = client.post(
+            f"/api/v1/tjm/attempts/{attempt_id}/items/0/hint",
+            json={"elapsed_ms": 0},
+            headers={
+                "Authorization": "Bearer bearer-user",
+                "Origin": "https://evil.example.com",
+            },
+        )
+
+    assert missing.status_code == 403
+    assert evil.status_code == 403
+    assert allowed.status_code == 201
+    assert open_evil.status_code == 403
+    assert open_allowed.status_code == 200
+    assert bearer.status_code == 200
+
+
+def test_exact_tjm_admin_mutation_routes_use_same_origin_guard() -> None:
+    admin_guard = auth_router.require_admin_same_origin
+    learner_guard = auth_router.require_authenticated_write_same_origin
+    admin_guarded = {
+        (method, route.path)
+        for route in tjm.router.routes
+        for method in route.methods
+        if any(dependency.call is admin_guard for dependency in route.dependant.dependencies)
+    }
+
+    assert admin_guarded == {
+        ("POST", "/exams"),
+        ("PATCH", "/exams/{exam_id}"),
+        ("POST", "/exams/{exam_id}/activate"),
+        ("POST", "/imports"),
+        ("PATCH", "/review/questions/{version_id}"),
+        ("POST", "/review/questions/{version_id}/review"),
+        ("POST", "/review/questions/{version_id}/publish"),
+        ("POST", "/review/questions/{version_id}/reject"),
+        ("POST", "/review/questions/{version_id}/retire"),
+        ("POST", "/review/questions/{version_id}/classify-retirement"),
+    }
+    learner_guarded = {
+        (method, route.path)
+        for route in tjm.router.routes
+        for method in route.methods
+        if any(dependency.call is learner_guard for dependency in route.dependant.dependencies)
+    }
+    assert learner_guarded == {
+        ("POST", "/attempts"),
+        ("POST", "/attempts/{attempt_id}/items/{position}/open"),
+        ("POST", "/attempts/{attempt_id}/answers"),
+        ("POST", "/attempts/{attempt_id}/items/{position}/hint"),
+        ("POST", "/attempts/{attempt_id}/items/{position}/voice-candidate"),
+        (
+            "POST",
+            "/attempts/{attempt_id}/items/{position}/voice-candidates/{candidate_id}/confirm",
+        ),
+        (
+            "POST",
+            "/attempts/{attempt_id}/items/{position}/voice-candidates/{candidate_id}/cancel",
+        ),
+        ("POST", "/attempts/{attempt_id}/submit"),
+        ("POST", "/review/attempts"),
+    }
+    mutating_routes = {
+        (method, route.path)
+        for route in tjm.router.routes
+        for method in route.methods
+        if method in {"POST", "PUT", "PATCH", "DELETE"}
+    }
+    assert mutating_routes == admin_guarded | learner_guarded
 
 
 def test_answer_and_submit_api_retries_are_idempotent_and_conflicts_fail_closed(

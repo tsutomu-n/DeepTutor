@@ -8,7 +8,12 @@ from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from deeptutor.api.routers.auth import require_admin, require_auth
+from deeptutor.api.routers.auth import (
+    require_admin,
+    require_admin_same_origin,
+    require_auth,
+    require_authenticated_write_same_origin,
+)
 from deeptutor.multi_user import paths as multi_user_paths
 from deeptutor.multi_user.context import get_current_user_or_none
 from deeptutor.services.auth import TokenPayload
@@ -186,7 +191,7 @@ def list_exams(
 @router.post("/exams", status_code=status.HTTP_201_CREATED)
 def create_exam(
     request: ExamRequest,
-    admin: TokenPayload = Depends(require_admin),
+    admin: TokenPayload = Depends(require_admin_same_origin),
     catalog: CatalogService = Depends(get_catalog_service),
 ) -> dict[str, Any]:
     try:
@@ -199,7 +204,7 @@ def create_exam(
 def replace_exam(
     exam_id: str,
     request: ExamRequest,
-    admin: TokenPayload = Depends(require_admin),
+    admin: TokenPayload = Depends(require_admin_same_origin),
     catalog: CatalogService = Depends(get_catalog_service),
 ) -> dict[str, Any]:
     try:
@@ -211,7 +216,7 @@ def replace_exam(
 @router.post("/exams/{exam_id}/activate")
 def activate_exam(
     exam_id: str,
-    admin: TokenPayload = Depends(require_admin),
+    admin: TokenPayload = Depends(require_admin_same_origin),
     catalog: CatalogService = Depends(get_catalog_service),
 ) -> dict[str, Any]:
     try:
@@ -224,7 +229,7 @@ def activate_exam(
 async def import_questions(
     import_format: Literal["json", "jsonl", "csv"] = Form(...),
     file: UploadFile = File(...),
-    admin: TokenPayload = Depends(require_admin),
+    admin: TokenPayload = Depends(require_admin_same_origin),
     catalog: CatalogService = Depends(get_catalog_service),
 ) -> dict[str, Any] | JSONResponse:
     payload = await file.read(MAX_IMPORT_BYTES + 1)
@@ -273,7 +278,7 @@ def list_review_questions(
 def replace_draft(
     version_id: str,
     request: QuestionRequest,
-    admin: TokenPayload = Depends(require_admin),
+    admin: TokenPayload = Depends(require_admin_same_origin),
     catalog: CatalogService = Depends(get_catalog_service),
 ) -> dict[str, Any]:
     try:
@@ -286,7 +291,7 @@ def replace_draft(
 def review_question(
     version_id: str,
     request: ReviewNote,
-    admin: TokenPayload = Depends(require_admin),
+    admin: TokenPayload = Depends(require_admin_same_origin),
     catalog: CatalogService = Depends(get_catalog_service),
 ) -> dict[str, Any]:
     try:
@@ -300,7 +305,7 @@ def review_question(
 @router.post("/review/questions/{version_id}/publish")
 def publish_question(
     version_id: str,
-    admin: TokenPayload = Depends(require_admin),
+    admin: TokenPayload = Depends(require_admin_same_origin),
     catalog: CatalogService = Depends(get_catalog_service),
 ) -> dict[str, Any]:
     try:
@@ -313,7 +318,7 @@ def publish_question(
 def reject_question(
     version_id: str,
     request: ReviewNote,
-    admin: TokenPayload = Depends(require_admin),
+    admin: TokenPayload = Depends(require_admin_same_origin),
     catalog: CatalogService = Depends(get_catalog_service),
 ) -> dict[str, Any]:
     try:
@@ -328,7 +333,7 @@ def reject_question(
 def retire_question(
     version_id: str,
     request: RetirementRequest,
-    admin: TokenPayload = Depends(require_admin),
+    admin: TokenPayload = Depends(require_admin_same_origin),
     catalog: CatalogService = Depends(get_catalog_service),
 ) -> dict[str, Any]:
     try:
@@ -346,7 +351,7 @@ def retire_question(
 def classify_legacy_retirement(
     version_id: str,
     request: LegacyRetirementClassificationRequest,
-    admin: TokenPayload = Depends(require_admin),
+    admin: TokenPayload = Depends(require_admin_same_origin),
     catalog: CatalogService = Depends(get_catalog_service),
 ) -> dict[str, Any]:
     try:
@@ -363,7 +368,7 @@ def classify_legacy_retirement(
 @router.post("/attempts", status_code=status.HTTP_201_CREATED)
 def start_attempt(
     request: StartAttemptRequest,
-    _: TokenPayload | None = Depends(require_auth),
+    _: TokenPayload | None = Depends(require_authenticated_write_same_origin),
     attempts: AttemptService = Depends(get_attempt_service),
     idempotency_key: str | None = Header(
         default=None, alias="Idempotency-Key", min_length=1, max_length=200
@@ -395,7 +400,7 @@ def get_attempt(
 def present_attempt_item(
     attempt_id: str,
     position: int,
-    _: TokenPayload | None = Depends(require_auth),
+    _: TokenPayload | None = Depends(require_authenticated_write_same_origin),
     attempts: AttemptService = Depends(get_attempt_service),
 ) -> dict[str, Any]:
     try:
@@ -408,7 +413,7 @@ def present_attempt_item(
 def answer_attempt(
     attempt_id: str,
     request: AnswerRequest,
-    _: TokenPayload | None = Depends(require_auth),
+    _: TokenPayload | None = Depends(require_authenticated_write_same_origin),
     attempts: AttemptService = Depends(get_attempt_service),
     idempotency_key: str | None = Header(
         default=None, alias="Idempotency-Key", min_length=1, max_length=200
@@ -434,7 +439,7 @@ def use_hint(
     attempt_id: str,
     position: int,
     request: HintRequest,
-    _: TokenPayload | None = Depends(require_auth),
+    _: TokenPayload | None = Depends(require_authenticated_write_same_origin),
     attempts: AttemptService = Depends(get_attempt_service),
     idempotency_key: str | None = Header(
         default=None, alias="Idempotency-Key", min_length=1, max_length=200
@@ -459,7 +464,7 @@ def record_voice_candidate(
     attempt_id: str,
     position: int,
     request: VoiceCandidateRequest,
-    _: TokenPayload | None = Depends(require_auth),
+    _: TokenPayload | None = Depends(require_authenticated_write_same_origin),
     attempts: AttemptService = Depends(get_attempt_service),
     idempotency_key: str | None = Header(
         default=None, alias="Idempotency-Key", min_length=1, max_length=200
@@ -483,7 +488,7 @@ def confirm_voice_candidate(
     position: int,
     candidate_id: int,
     request: VoiceConfirmRequest,
-    _: TokenPayload | None = Depends(require_auth),
+    _: TokenPayload | None = Depends(require_authenticated_write_same_origin),
     attempts: AttemptService = Depends(get_attempt_service),
     idempotency_key: str | None = Header(
         default=None, alias="Idempotency-Key", min_length=1, max_length=200
@@ -507,7 +512,7 @@ def cancel_voice_candidate(
     attempt_id: str,
     position: int,
     candidate_id: int,
-    _: TokenPayload | None = Depends(require_auth),
+    _: TokenPayload | None = Depends(require_authenticated_write_same_origin),
     attempts: AttemptService = Depends(get_attempt_service),
     idempotency_key: str | None = Header(
         default=None, alias="Idempotency-Key", min_length=1, max_length=200
@@ -527,7 +532,7 @@ def cancel_voice_candidate(
 @router.post("/attempts/{attempt_id}/submit")
 def submit_attempt(
     attempt_id: str,
-    _: TokenPayload | None = Depends(require_auth),
+    _: TokenPayload | None = Depends(require_authenticated_write_same_origin),
     attempts: AttemptService = Depends(get_attempt_service),
     idempotency_key: str | None = Header(
         default=None, alias="Idempotency-Key", min_length=1, max_length=200
@@ -564,7 +569,7 @@ def get_review_queue(
 @router.post("/review/attempts", status_code=status.HTTP_201_CREATED)
 def start_review_attempt(
     request: ReviewAttemptRequest,
-    _: TokenPayload | None = Depends(require_auth),
+    _: TokenPayload | None = Depends(require_authenticated_write_same_origin),
     attempts: AttemptService = Depends(get_attempt_service),
     idempotency_key: str | None = Header(
         default=None, alias="Idempotency-Key", min_length=1, max_length=200

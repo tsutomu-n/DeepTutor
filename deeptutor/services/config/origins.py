@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 from urllib.parse import urlparse
 
 _ORIGIN_SEPARATORS = re.compile(r"[,;\n]+")
+_UNSAFE_CREDENTIALED_ORIGINS = frozenset({"*", "null"})
 
 
 def _raw_origin_items(value: Any) -> Iterable[str]:
@@ -52,4 +53,31 @@ def normalize_origins(value: Any) -> list[str]:
         if origin and origin not in seen:
             origins.append(origin)
             seen.add(origin)
+    return origins
+
+
+def find_unsafe_credentialed_origins(value: Any) -> list[str]:
+    """Return configured origins that cannot be used with browser credentials."""
+    return sorted(_UNSAFE_CREDENTIALED_ORIGINS & set(normalize_origins(value)))
+
+
+def browser_allowed_origins(system_settings: Mapping[str, Any]) -> list[str]:
+    """Return concrete browser origins shared by CORS and cookie-write guards.
+
+    Wildcard and opaque origins are never concrete credentialed origins.  The
+    API startup path additionally rejects them when authentication is enabled,
+    but filtering here keeps every other caller fail-closed as well.
+    """
+    frontend_port = str(system_settings.get("frontend_port") or 3782)
+    origins = [
+        f"http://localhost:{frontend_port}",
+        f"http://127.0.0.1:{frontend_port}",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ]
+    for origin in normalize_origins(
+        [system_settings.get("cors_origin"), system_settings.get("cors_origins")]
+    ):
+        if origin not in _UNSAFE_CREDENTIALED_ORIGINS and origin not in origins:
+            origins.append(origin)
     return origins
