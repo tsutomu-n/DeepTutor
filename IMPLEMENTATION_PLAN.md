@@ -1,6 +1,6 @@
 # TJM 実装計画
 
-更新: 2026-08-03_14:31 (Asia/Tokyo)
+更新: 2026-08-03_15:03 (Asia/Tokyo)
 
 ## 1. 状態
 
@@ -472,15 +472,23 @@ Webは正式正解をローカル判定せず、practiceの確定応答または
 | 無効得点の表示 | 最終結果、Recent attempts | 保存済みraw得点は保持するが「Historical raw score」「Content invalidated」と明示し、現在有効な正式結果に見せない |
 | Review/retirement回帰 | `pytest -q tests/tjm tests/api/test_tjm_router.py` | 97 passed、211 warnings。migration、二タブ並行、後発理由、途中dismiss、legacy明示分類、冪等再送の正解再露出防止、raw履歴保持、invalid除外を含む |
 | Review/retirement Web回帰 | `npm run test:node`; `npx tsc --noEmit`; 対象`eslint` | 389 passed、型検査・lint成功。無効問題の画面・音声回答停止、raw得点警告、管理画面の無効化・旧廃止分類を含む |
+| TJM利用者path解決 | `get_attempt_service`自身の認証依存、request userとworkspace rootの一致検査 | 利用者Context欠落は500、利用者workspace解決・DB初期化失敗は503とし、汎用`PathService`のadmin/default fallbackをTJM学習APIでは使用しない。auth無効時のlocal adminと通常user DBを回帰確認 |
+| Learning migration v4 | active exam insert/update trigger | 同一利用者DB・同一試験でactive exam中の新規exam/practice/reviewをSQLite境界でも拒否。移行前から重複していたactive examは推測で変更せず保持し、新規重複だけを拒否 |
+| active exam境界 | start、既存practice/review・旧exam、GET、冪等再送、history、analytics、review queue | 既存practice/reviewを永久lockにしないためexam開始自体は許可し、active exam自身以外は旧examを含め試験中だけ操作と保存済みfeedbackを409/非表示にする。試験提出または期限確定後に再開。同時exam開始は`BEGIN IMMEDIATE`下で1件だけ成功 |
+| 認可・横断漏洩回帰 | `pytest -q tests/tjm tests/api/test_tjm_router.py` | 112 passed、211 warnings。利用者path失敗時のadmin DB非作成、auth無効互換、試験中の正解field非露出、旧exam直接GET・submit再送、履歴・分析・復習queue遮断、期限ちょうどの直接/並行確定、legacy migrationを含む |
+| 認可静的検査 | 対象`ruff check`、`git diff --check` | 成功 |
+| 認可独立レビュー | P0/P1再監査、期限競合と旧exam直接経路の追補 | 追補2件を修正後、未解決P0/P1なし。reviewer側では既存`CatalogStore`並行初期化のWAL lockを3回中1回観測したが、本作業側の同一test 10回は全成功。CP-14/最終gateで再発時はflakyとして放置せず停止・修復する |
 
 ## 17. 既存リスクと今回の扱い
 
 - catalogは共有DB、learningは利用者別DBであるため、問題廃止と全利用者queue取消を単一transactionで即時反映する構造ではない。現在の契約は「各利用者の次のTJM操作より前に必ず同期し、その応答では旧版を有効扱いしない」である。管理操作直後に全利用者DBを物理更新する要件へ変える場合は、DB topologyまたは調整jobの別設計を停止条件として扱う。
-- 認可の独立監査で、非adminの利用者path解決失敗時にadmin用`PathService`へfallbackする経路、同一利用者が並行practice/提出済みattemptを正解oracleとして使える経路、cookie認証の状態変更routeにCSRF検査がない点を確認した。これは停止条件ではなくCP-13の次の修正単位とし、fail-closed path解決、active exam lock、認可・漏洩negative testの順で閉じる。
+- 認可の独立監査で確認したTJM利用者pathのadmin fallbackと、active exam中に別attempt/historyから同一問題のfeedbackを取得する経路は閉じた。ただしこれは同時API経路の遮断であり、利用者が試験前に知った正解、保存済み画面、別端末の記憶を防ぐ試験監督機能ではない。移行前から同一試験に複数のactive examがあるDBは推測で片方を終了せず保持し、新規開始だけをfail-closedにした。汎用`get_path_service()`のfallbackはTJM外に残る。
+- cookie認証のTJM管理者更新routeにはCSRF/Origin検査がまだない。TJM管理者mutationへ限定したsame-origin依存を次の修正単位とし、Bearerとauth無効構成は互換維持する。Next/reverse proxy経由で`Origin`がFastAPIまで保持されない場合は検査を緩めず、配備契約を停止して確定する。
 - npm auditは現在high 3件、moderate 2件、critical 0件である。自動修正が破壊的downgradeになるという過去の記録は今回の再確認で裏付け切れなかったため撤回する。advisoryごとの導入差分、production到達性、修正可否はCP-14で確定する。
 - CP-04時点ではPython lockfileがなく範囲依存の最新値を解決した。現在は`uv.lock`を追加したが、Dockerのrequirements経路はまだ同一lockを消費しない。
 - Dockerも `pip install -r requirements.txt` で当日最新を解決し、Python 3.11環境ではローカルPython 3.12環境と一部の解決版が異なる。production build成功は確認したが、将来の同一解決を保証する証拠ではない。
 - mypyの現行コマンドは設定と最新stubが不整合である。TJM追加コードは局所型検査を通し、全体契約修復は独立変更として判断する。
+- `CatalogStore`並行初期化testは独立review環境で3回中1回WAL lockを観測した一方、本作業環境の再実行10回は全成功で再現しなかった。今回差分が触れていないCatalog共通connection上の未確定flakyとして記録し、CP-14または最終全gateで再発した場合は既存失敗扱いで通過させない。
 - ローカルNode 24とCI/Docker Node 22が異なる。Docker buildをNode 22の正本とし、TJM Web検証でもNode 22経路を残す。
 - 実宅建問題データはリポジトリに存在しない。著作権・正確性を推測せず、取り込み・審査機能の完成後に人間が正当なデータを投入する。
 - TJM詳細画面の固定UI文言は現時点で英語を正本とし、global navigationだけ既存en/zh catalogへ追加した。機能境界とは分離しているが、日本語UIを配布要件にする場合はlocale追加が必要である。

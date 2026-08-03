@@ -856,6 +856,34 @@ END;
 """
 
 
+_LEARNING_V4 = """
+CREATE TRIGGER prevent_attempt_start_while_exam_active
+BEFORE INSERT ON attempts
+WHEN NEW.status = 'in_progress' AND EXISTS (
+    SELECT 1 FROM attempts AS active_exam
+    WHERE active_exam.exam_id = NEW.exam_id
+      AND active_exam.mode = 'exam'
+      AND active_exam.status = 'in_progress'
+)
+BEGIN
+    SELECT RAISE(ABORT, 'an exam attempt is already in progress for this exam');
+END;
+
+CREATE TRIGGER prevent_attempt_reactivation_while_exam_active
+BEFORE UPDATE OF exam_id, mode, status ON attempts
+WHEN NEW.status = 'in_progress' AND EXISTS (
+    SELECT 1 FROM attempts AS active_exam
+    WHERE active_exam.exam_id = NEW.exam_id
+      AND active_exam.mode = 'exam'
+      AND active_exam.status = 'in_progress'
+      AND active_exam.id != NEW.id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'an exam attempt is already in progress for this exam');
+END;
+"""
+
+
 class CatalogStore(_SQLiteStore):
     """Authoritative deployment-wide exam and immutable question catalog."""
 
@@ -865,7 +893,7 @@ class CatalogStore(_SQLiteStore):
 class LearningStore(_SQLiteStore):
     """Request-owner-scoped attempts and append-only answer history."""
 
-    migrations = (_LEARNING_V1, _LEARNING_V2, _LEARNING_V3)
+    migrations = (_LEARNING_V1, _LEARNING_V2, _LEARNING_V3, _LEARNING_V4)
 
 
 __all__ = ["CatalogStore", "LearningStore", "UnsupportedSchemaVersion"]

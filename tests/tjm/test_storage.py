@@ -80,7 +80,7 @@ def test_learning_store_initializes_only_user_learning_schema(tmp_path: Path) ->
         "review_queue",
         "review_attempt_queue_links",
     }
-    assert _migration_versions(db_path) == [1, 2, 3]
+    assert _migration_versions(db_path) == [1, 2, 3, 4]
 
 
 def test_catalog_store_serializes_concurrent_initialization(tmp_path: Path) -> None:
@@ -222,7 +222,7 @@ def test_learning_v2_preserves_client_metrics_without_inventing_server_time(
 
     migrated = LearningStore(db_path)
 
-    assert _migration_versions(db_path) == [1, 2, 3]
+    assert _migration_versions(db_path) == [1, 2, 3, 4]
     with migrated.connect() as conn:
         item = conn.execute(
             """
@@ -430,3 +430,103 @@ def test_tjm_stores_enable_foreign_keys_on_every_connection(tmp_path: Path) -> N
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     with learning.connect() as conn:
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+
+
+def test_learning_v4_rejects_new_attempt_while_exam_is_active_at_database_edge(
+    tmp_path: Path,
+) -> None:
+    store = LearningStore(tmp_path / "learning.db")
+
+    with store.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO attempts (
+                id, exam_id, mode, status, exam_snapshot_json, started_at, deadline_at
+            ) VALUES ('exam-1', 'exam', 'exam', 'in_progress', '{}',
+                      '2026-01-01T00:00:00Z', '2026-01-01T01:00:00Z')
+            """
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="already in progress"):
+            conn.execute(
+                """
+                INSERT INTO attempts (
+                    id, exam_id, mode, status, exam_snapshot_json, started_at
+                ) VALUES ('practice-1', 'exam', 'practice', 'in_progress', '{}',
+                          '2026-01-01T00:00:01Z')
+                """
+            )
+        conn.execute(
+            "UPDATE attempts SET status = 'submitted', submitted_at = ? WHERE id = 'exam-1'",
+            ("2026-01-01T00:10:00Z",),
+        )
+        conn.execute(
+            """
+            INSERT INTO attempts (
+                id, exam_id, mode, status, exam_snapshot_json, started_at
+            ) VALUES ('practice-1', 'exam', 'practice', 'in_progress', '{}',
+                      '2026-01-01T00:10:01Z')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO attempts (
+                id, exam_id, mode, status, exam_snapshot_json, started_at, deadline_at
+            ) VALUES ('exam-2', 'exam', 'exam', 'in_progress', '{}',
+                      '2026-01-01T00:10:02Z', '2026-01-01T01:10:02Z')
+            """
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="already in progress"):
+            conn.execute(
+                """
+                INSERT INTO attempts (
+                    id, exam_id, mode, status, exam_snapshot_json, started_at, deadline_at
+                ) VALUES ('exam-3', 'exam', 'exam', 'in_progress', '{}',
+                          '2026-01-01T00:10:03Z', '2026-01-01T01:10:03Z')
+                """
+            )
+
+
+def test_learning_v4_preserves_legacy_active_exam_conflicts_but_blocks_new_ones(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "legacy-active-exams.db"
+
+    class LegacyLearningStore(LearningStore):
+        migrations = LearningStore.migrations[:3]
+
+    legacy = LegacyLearningStore(db_path)
+    with legacy.connect() as conn:
+        for attempt_id in ("legacy-exam-1", "legacy-exam-2"):
+            conn.execute(
+                """
+                INSERT INTO attempts (
+                    id, exam_id, mode, status, exam_snapshot_json,
+                    started_at, deadline_at
+                ) VALUES (?, 'exam', 'exam', 'in_progress', '{}',
+                          '2026-01-01T00:00:00Z', '2026-01-01T01:00:00Z')
+                """,
+                (attempt_id,),
+            )
+
+    migrated = LearningStore(db_path)
+
+    assert _migration_versions(db_path) == [1, 2, 3, 4]
+    with migrated.connect() as conn:
+        assert (
+            conn.execute(
+                """
+            SELECT COUNT(*) FROM attempts
+            WHERE exam_id = 'exam' AND mode = 'exam' AND status = 'in_progress'
+            """
+            ).fetchone()[0]
+            == 2
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="already in progress"):
+            conn.execute(
+                """
+                INSERT INTO attempts (
+                    id, exam_id, mode, status, exam_snapshot_json, started_at
+                ) VALUES ('new-practice', 'exam', 'practice', 'in_progress', '{}',
+                          '2026-01-01T00:00:01Z')
+                """
+            )

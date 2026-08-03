@@ -7,9 +7,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 import pytest
 
+from deeptutor.api.routers import auth as auth_router
 from deeptutor.api.routers import tjm
 from deeptutor.api.routers.auth import require_admin, require_auth
+from deeptutor.multi_user import paths as multi_user_paths
 from deeptutor.services.auth import TokenPayload
+from deeptutor.services.path_service import PathService
 from deeptutor.tjm.attempts import AttemptService
 from deeptutor.tjm.catalog import CatalogService
 from deeptutor.tjm.domain import Choice, ExamSpec, QuestionVersionDraft
@@ -365,6 +368,119 @@ def learner_client(catalog: CatalogService, tmp_path: Path) -> TestClient:
     return TestClient(app)
 
 
+def test_tjm_user_path_failure_never_falls_back_to_admin_learning_db(
+    catalog: CatalogService,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin_paths = PathService(workspace_root=tmp_path / "admin-data")
+    admin_learning_db = admin_paths.get_tjm_learning_db()
+    monkeypatch.setattr(auth_router, "AUTH_ENABLED", True)
+    monkeypatch.setattr(
+        auth_router,
+        "decode_token",
+        lambda _token: TokenPayload(username="alice", role="user", user_id="u_alice"),
+    )
+    monkeypatch.setattr(
+        multi_user_paths,
+        "get_current_path_service",
+        lambda: (_ for _ in ()).throw(OSError("user workspace is unavailable")),
+    )
+    monkeypatch.setattr(
+        PathService,
+        "get_instance",
+        classmethod(lambda cls: admin_paths),
+    )
+
+    app = FastAPI()
+    app.include_router(tjm.router, prefix="/api/v1/tjm")
+    app.dependency_overrides[tjm.get_catalog_service] = lambda: catalog
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.get(
+            "/api/v1/tjm/history",
+            headers={"Authorization": "Bearer valid-test-token"},
+        )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "TJM user workspace is unavailable"}
+    assert not admin_learning_db.exists()
+
+
+def test_tjm_attempt_service_rejects_missing_request_user_context(
+    catalog: CatalogService,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin_paths = PathService(workspace_root=tmp_path / "admin-data")
+    admin_learning_db = admin_paths.get_tjm_learning_db()
+    monkeypatch.setattr(
+        PathService,
+        "get_instance",
+        classmethod(lambda cls: admin_paths),
+    )
+
+    app = FastAPI()
+    app.include_router(tjm.router, prefix="/api/v1/tjm")
+    app.dependency_overrides[require_auth] = lambda: TokenPayload(
+        username="alice", role="user", user_id="u_alice"
+    )
+    app.dependency_overrides[tjm.get_catalog_service] = lambda: catalog
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.get("/api/v1/tjm/history")
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "TJM user context is unavailable"}
+    assert not admin_learning_db.exists()
+
+
+def test_tjm_attempt_service_uses_authenticated_users_learning_db(
+    catalog: CatalogService,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    users_root = tmp_path / "data" / "users"
+    monkeypatch.setattr(auth_router, "AUTH_ENABLED", True)
+    monkeypatch.setattr(multi_user_paths, "USERS_ROOT", users_root)
+    monkeypatch.setattr(multi_user_paths, "_path_services", {})
+    monkeypatch.setattr(
+        auth_router,
+        "decode_token",
+        lambda _token: TokenPayload(username="alice", role="user", user_id="u_alice"),
+    )
+
+    app = FastAPI()
+    app.include_router(tjm.router, prefix="/api/v1/tjm")
+    app.dependency_overrides[tjm.get_catalog_service] = lambda: catalog
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/v1/tjm/history",
+            headers={"Authorization": "Bearer valid-test-token"},
+        )
+
+    assert response.status_code == 200
+    assert (users_root / "u_alice" / "user" / "tjm_learning.db").is_file()
+
+
+def test_tjm_attempt_service_keeps_auth_disabled_local_admin_mode(
+    catalog: CatalogService,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin_root = tmp_path / "data"
+    monkeypatch.setattr(auth_router, "AUTH_ENABLED", False)
+    monkeypatch.setattr(multi_user_paths, "ADMIN_WORKSPACE_ROOT", admin_root)
+    monkeypatch.setattr(multi_user_paths, "_path_services", {})
+
+    app = FastAPI()
+    app.include_router(tjm.router, prefix="/api/v1/tjm")
+    app.dependency_overrides[tjm.get_catalog_service] = lambda: catalog
+    with TestClient(app) as client:
+        response = client.get("/api/v1/tjm/history")
+
+    assert response.status_code == 200
+    assert (admin_root / "user" / "tjm_learning.db").is_file()
+
+
 def test_practice_attempt_api_returns_immediate_deterministic_feedback(
     learner_client: TestClient,
 ) -> None:
@@ -449,6 +565,56 @@ def test_exam_attempt_api_has_no_answer_leak_before_submit(learner_client: TestC
     assert submitted.status_code == 200
     assert submitted.json()["items"][0]["correct_option_key"] == "B"
     assert submitted.json()["items"][0]["is_correct"] is False
+
+
+def test_active_exam_closes_same_exam_feedback_routes_until_submit(
+    learner_client: TestClient,
+) -> None:
+    practice = learner_client.post(
+        "/api/v1/tjm/attempts",
+        json={"exam_id": "exam-learn", "mode": "practice"},
+    ).json()
+    practice_id = practice["id"]
+    assert (
+        learner_client.post(f"/api/v1/tjm/attempts/{practice_id}/items/0/open").status_code == 200
+    )
+    feedback = learner_client.post(
+        f"/api/v1/tjm/attempts/{practice_id}/answers",
+        json={
+            "position": 0,
+            "selected_option_key": "B",
+            "confidence": 90,
+            "elapsed_ms": 100,
+            "confirmed": True,
+        },
+    )
+    assert feedback.status_code == 200
+    assert feedback.json()["correct_option_key"] == "B"
+
+    exam = learner_client.post(
+        "/api/v1/tjm/attempts",
+        json={"exam_id": "exam-learn", "mode": "exam"},
+    )
+    assert exam.status_code == 201
+    exam_id = exam.json()["id"]
+
+    assert learner_client.get(f"/api/v1/tjm/attempts/{practice_id}").status_code == 409
+    assert (
+        learner_client.post(
+            "/api/v1/tjm/attempts",
+            json={"exam_id": "exam-learn", "mode": "practice"},
+        ).status_code
+        == 409
+    )
+    history = learner_client.get("/api/v1/tjm/history")
+    assert history.status_code == 200
+    assert [attempt["id"] for attempt in history.json()["attempts"]] == [exam_id]
+    assert "correct_option_key" not in json.dumps(history.json())
+
+    assert learner_client.post(f"/api/v1/tjm/attempts/{exam_id}/submit").status_code == 200
+    resumed = learner_client.get(f"/api/v1/tjm/attempts/{practice_id}")
+    assert resumed.status_code == 200
+    assert resumed.json()["items"][0]["correct_option_key"] == "B"
 
 
 def test_answer_and_submit_api_retries_are_idempotent_and_conflicts_fail_closed(

@@ -168,6 +168,7 @@ class AttemptService:
                 raise replay
             if replay is not None:
                 return self._safe_attempt_replay(conn, replay, started)
+            self._finalize_due_attempts(conn, started)
             attempt_id = self._insert_attempt(
                 conn,
                 exam=exam,
@@ -187,8 +188,8 @@ class AttemptService:
             )
         return result
 
-    @staticmethod
     def _insert_attempt(
+        self,
         conn,
         *,
         exam: dict[str, Any],
@@ -196,6 +197,7 @@ class AttemptService:
         mode: str,
         started: datetime,
     ) -> str:
+        self._ensure_attempt_start_allowed(conn, exam_id=str(exam["id"]))
         deadline = (
             started + timedelta(seconds=int(exam["duration_seconds"])) if mode == "exam" else None
         )
@@ -354,6 +356,7 @@ class AttemptService:
                 raise AttemptNotFoundError(f"unknown attempt: {attempt_id}")
             if attempt["status"] == "in_progress" and self._deadline_passed(dict(attempt), now):
                 self._finalize_if_expired(conn, attempt_id, now)
+            self._ensure_attempt_not_frozen(conn, dict(attempt), now)
             return self._attempt_view(conn, attempt_id)
 
     def present_item(self, attempt_id: str, *, position: int) -> dict[str, Any]:
@@ -366,6 +369,7 @@ class AttemptService:
             attempt, item = self._attempt_and_item(conn, attempt_id, position)
             expired = self._finalize_if_expired(conn, attempt_id, now_dt)
             if not expired:
+                self._ensure_attempt_not_frozen(conn, dict(attempt), now_dt)
                 self._ensure_answerable(dict(attempt))
                 self._ensure_item_eligible(dict(item))
                 conn.execute(
@@ -437,11 +441,12 @@ class AttemptService:
                     replay,
                     attempt_id=attempt_id,
                     position=position,
-                    reconciled_at=now,
+                    now=now_dt,
                 )
             attempt, item = self._attempt_and_item(conn, attempt_id, position)
             expired = self._finalize_if_expired(conn, attempt_id, now_dt)
             if not expired:
+                self._ensure_attempt_not_frozen(conn, dict(attempt), now_dt)
                 self._ensure_answerable(dict(attempt))
                 self._ensure_presented(dict(item))
                 self._ensure_item_mutable(dict(attempt), dict(item))
@@ -603,12 +608,13 @@ class AttemptService:
                     conn,
                     attempt_id=attempt_id,
                     position=position,
-                    reconciled_at=now,
+                    now=now_dt,
                 )
                 return replay
             attempt, item = self._attempt_and_item(conn, attempt_id, position)
             expired = self._finalize_if_expired(conn, attempt_id, now_dt)
             if not expired:
+                self._ensure_attempt_not_frozen(conn, dict(attempt), now_dt)
                 self._ensure_answerable(dict(attempt))
                 self._ensure_presented(dict(item))
                 self._ensure_item_mutable(dict(attempt), dict(item))
@@ -705,12 +711,13 @@ class AttemptService:
                     conn,
                     attempt_id=attempt_id,
                     position=position,
-                    reconciled_at=now,
+                    now=now_dt,
                 )
                 return replay
             attempt, item = self._attempt_and_item(conn, attempt_id, position)
             expired = self._finalize_if_expired(conn, attempt_id, now_dt)
             if not expired:
+                self._ensure_attempt_not_frozen(conn, dict(attempt), now_dt)
                 self._ensure_answerable(dict(attempt))
                 self._ensure_presented(dict(item))
                 self._ensure_item_mutable(dict(attempt), dict(item))
@@ -807,11 +814,12 @@ class AttemptService:
                     replay,
                     attempt_id=attempt_id,
                     position=position,
-                    reconciled_at=now,
+                    now=now_dt,
                 )
             attempt, item = self._attempt_and_item(conn, attempt_id, position)
             expired = self._finalize_if_expired(conn, attempt_id, now_dt)
             if not expired:
+                self._ensure_attempt_not_frozen(conn, dict(attempt), now_dt)
                 self._ensure_answerable(dict(attempt))
                 self._ensure_presented(dict(item))
                 self._ensure_item_mutable(dict(attempt), dict(item))
@@ -915,10 +923,13 @@ class AttemptService:
                 raise replay
             if replay is not None:
                 self._finalize_if_expired(conn, attempt_id, now_dt)
+                attempt, _ = self._attempt_and_item(conn, attempt_id, position)
+                self._ensure_attempt_not_frozen(conn, dict(attempt), now_dt)
                 return replay
             attempt, _ = self._attempt_and_item(conn, attempt_id, position)
             expired = self._finalize_if_expired(conn, attempt_id, now_dt)
             if not expired:
+                self._ensure_attempt_not_frozen(conn, dict(attempt), now_dt)
                 self._ensure_answerable(dict(attempt))
                 candidate = self._pending_voice_candidate(
                     conn, attempt_id=attempt_id, position=position, candidate_id=candidate_id
@@ -984,6 +995,7 @@ class AttemptService:
             attempt = conn.execute("SELECT * FROM attempts WHERE id = ?", (attempt_id,)).fetchone()
             if attempt is None:
                 raise AttemptNotFoundError(f"unknown attempt: {attempt_id}")
+            self._ensure_attempt_not_frozen(conn, dict(attempt), now_dt)
             if attempt["status"] == "expired":
                 result = self._attempt_view(conn, attempt_id)
             elif attempt["status"] != "in_progress":
@@ -1015,6 +1027,7 @@ class AttemptService:
             now = _now_datetime()
             self._finalize_due_attempts(conn, now)
             self._reconcile_catalog_state(conn, _timestamp(now))
+            active_exam_ids = self._active_exam_ids(conn)
             rows = conn.execute(
                 """
                 SELECT question_version_id, reason, priority, due_at, created_at
@@ -1029,6 +1042,8 @@ class AttemptService:
             entry = grouped.get(version_id)
             if entry is None:
                 version = self.catalog.get_question_version(version_id)
+                if str(version["exam_id"]) in active_exam_ids:
+                    continue
                 entry = {
                     "question_version_id": version_id,
                     "stable_id": version["stable_id"],
@@ -1053,10 +1068,17 @@ class AttemptService:
             self._reconcile_catalog_state(conn, _timestamp(now))
             attempts = conn.execute(
                 """
-                SELECT id, mode, submitted_at, correct_count, total_count
-                FROM attempts
-                WHERE status IN ('submitted', 'expired')
-                ORDER BY submitted_at, id
+                SELECT candidate.id, candidate.mode, candidate.submitted_at,
+                       candidate.correct_count, candidate.total_count
+                FROM attempts AS candidate
+                WHERE candidate.status IN ('submitted', 'expired')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM attempts AS active_exam
+                      WHERE active_exam.exam_id = candidate.exam_id
+                        AND active_exam.mode = 'exam'
+                        AND active_exam.status = 'in_progress'
+                  )
+                ORDER BY candidate.submitted_at, candidate.id
                 """
             ).fetchall()
             item_rows = conn.execute(
@@ -1066,6 +1088,12 @@ class AttemptService:
                 JOIN attempts a ON a.id = ai.attempt_id
                 WHERE a.status IN ('submitted', 'expired')
                   AND ai.catalog_disposition IN ('current', 'superseded')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM attempts AS active_exam
+                      WHERE active_exam.exam_id = a.exam_id
+                        AND active_exam.mode = 'exam'
+                        AND active_exam.status = 'in_progress'
+                  )
                 ORDER BY a.submitted_at, ai.attempt_id, ai.position
                 """
             ).fetchall()
@@ -1157,7 +1185,17 @@ class AttemptService:
             self._reconcile_catalog_state(conn, _timestamp(now))
             rows = conn.execute(
                 """
-                SELECT id FROM attempts ORDER BY started_at DESC, id DESC LIMIT ?
+                SELECT candidate.id
+                FROM attempts AS candidate
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM attempts AS active_exam
+                    WHERE active_exam.exam_id = candidate.exam_id
+                      AND active_exam.mode = 'exam'
+                      AND active_exam.status = 'in_progress'
+                      AND active_exam.id != candidate.id
+                )
+                ORDER BY candidate.started_at DESC, candidate.id DESC
+                LIMIT ?
                 """,
                 (limit,),
             ).fetchall()
@@ -1286,7 +1324,13 @@ class AttemptService:
             }:
                 raise RuntimeError(f"unsupported catalog disposition: {disposition}")
 
-    def _finalize_due_attempts(self, conn, now: datetime) -> None:
+    def _finalize_due_attempts(
+        self,
+        conn,
+        now: datetime,
+        *,
+        exclude_attempt_id: str | None = None,
+    ) -> None:
         rows = conn.execute(
             """
             SELECT id, deadline_at
@@ -1295,6 +1339,8 @@ class AttemptService:
             """
         ).fetchall()
         for row in rows:
+            if str(row["id"]) == exclude_attempt_id:
+                continue
             if self._deadline_passed(dict(row), now):
                 self._finalize_if_expired(conn, str(row["id"]), now)
 
@@ -1428,6 +1474,7 @@ class AttemptService:
         )
         self._finalize_if_expired(conn, replay_attempt_id, now)
         current = self._attempt_view(conn, replay_attempt_id)
+        self._ensure_attempt_not_frozen(conn, current, now)
         invalid_items = {
             str(item["question_version_id"]): item
             for item in current["items"]
@@ -1459,11 +1506,13 @@ class AttemptService:
         *,
         attempt_id: str,
         position: int,
-        reconciled_at: str,
+        now: datetime,
     ) -> dict[str, Any]:
         """Preserve the original item response unless a later revocation must redact it."""
-        self._reconcile_catalog_state(conn, reconciled_at, attempt_id=attempt_id)
-        current = self._attempt_view(conn, attempt_id)["items"][position]
+        self._reconcile_catalog_state(conn, _timestamp(now), attempt_id=attempt_id)
+        attempt = self._attempt_view(conn, attempt_id)
+        self._ensure_attempt_not_frozen(conn, attempt, now)
+        current = attempt["items"][position]
         if current["grading_status"] != "content_invalidated":
             return replay
         safe = dict(replay)
@@ -1481,9 +1530,13 @@ class AttemptService:
         *,
         attempt_id: str,
         position: int,
-        reconciled_at: str,
+        now: datetime,
     ) -> None:
-        self._reconcile_catalog_state(conn, reconciled_at, attempt_id=attempt_id)
+        self._reconcile_catalog_state(conn, _timestamp(now), attempt_id=attempt_id)
+        attempt = conn.execute("SELECT * FROM attempts WHERE id = ?", (attempt_id,)).fetchone()
+        if attempt is None:
+            raise AttemptNotFoundError(f"unknown attempt: {attempt_id}")
+        self._ensure_attempt_not_frozen(conn, dict(attempt), now)
         item = conn.execute(
             """
             SELECT * FROM attempt_items WHERE attempt_id = ? AND position = ?
@@ -1493,6 +1546,55 @@ class AttemptService:
         if item is None:
             raise DomainValidationError(f"unknown attempt position: {position}")
         self._ensure_item_eligible(dict(item))
+
+    def _ensure_attempt_start_allowed(self, conn, *, exam_id: str) -> None:
+        active = conn.execute(
+            """
+            SELECT id FROM attempts
+            WHERE exam_id = ? AND mode = 'exam' AND status = 'in_progress'
+            ORDER BY started_at, id
+            LIMIT 1
+            """,
+            (exam_id,),
+        ).fetchone()
+        if active is not None:
+            raise InvalidTransitionError("an exam attempt is already in progress for this exam")
+
+    def _ensure_attempt_not_frozen(
+        self,
+        conn,
+        attempt: dict[str, Any],
+        now: datetime,
+    ) -> None:
+        self._finalize_due_attempts(
+            conn,
+            now,
+            exclude_attempt_id=str(attempt["id"]),
+        )
+        active = conn.execute(
+            """
+            SELECT id FROM attempts
+            WHERE exam_id = ? AND mode = 'exam' AND status = 'in_progress'
+              AND id != ?
+            ORDER BY started_at, id
+            LIMIT 1
+            """,
+            (attempt["exam_id"], attempt["id"]),
+        ).fetchone()
+        if active is not None:
+            raise InvalidTransitionError("an exam attempt is already in progress for this exam")
+
+    @staticmethod
+    def _active_exam_ids(conn) -> set[str]:
+        return {
+            str(row["exam_id"])
+            for row in conn.execute(
+                """
+                SELECT DISTINCT exam_id FROM attempts
+                WHERE mode = 'exam' AND status = 'in_progress'
+                """
+            ).fetchall()
+        }
 
     @staticmethod
     def _normalize_exam_id(value: str) -> str:

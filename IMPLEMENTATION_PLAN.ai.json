@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "updated_at": "2026-08-03_14:31",
+  "updated_at": "2026-08-03_15:03",
   "timezone": "Asia/Tokyo",
   "status": "in_progress",
   "current_checkpoint": "CP-13",
@@ -444,17 +444,31 @@
         "ruff_and_diff_check": "passed"
       },
       "authorization_and_leakage": {
-        "status": "pending_remediation",
-        "confirmed_findings": [
-          "non-admin user path resolution can fall back to the admin PathService when resolution raises",
-          "parallel practice or finalized attempts can expose the same versions while an exam remains in progress",
-          "cookie-authenticated state-changing admin routes have no explicit CSRF or Origin validation"
+        "status": "in_progress",
+        "learning_schema_version": 4,
+        "completed_controls": [
+          "get_attempt_service depends on require_auth and fails closed when request user context is absent",
+          "TJM learning storage uses the exact current-user workspace and never calls the generic admin fallback",
+          "an active exam blocks new same-exam attempts at service and SQLite trigger boundaries",
+          "pre-existing practice, review, and finalized exam attempts are frozen only while another same-exam exam is active",
+          "same-exam direct reads, prior submit replay, history, analytics, review queue, and idempotent feedback replay cannot expose grading data during an active exam",
+          "expired exams are finalized before the start guard, direct submit at the exact deadline remains atomic, and parallel exam starts create one active attempt"
         ],
+        "migration_policy": "Learning v4 preserves pre-existing duplicate active exams instead of guessing which one to finalize; it blocks every new same-exam attempt until no active exam remains",
+        "scope_limit": "this prevents concurrent API answer-oracle paths in a self-study product; it is not proctoring and cannot erase answers learned or saved before exam start",
+        "outside_scope": "the generic get_path_service fallback remains available outside TJM and requires a separate application-wide audit",
+        "remaining_findings": [
+          "cookie-authenticated state-changing TJM admin routes have no explicit CSRF or Origin validation"
+        ],
+        "evidence": {
+          "tjm_api_tests": {"passed": 112, "warnings": 211},
+          "independent_review": "no unresolved P0 or P1 after prior-exam direct-read and exact-deadline submit fixes",
+          "catalog_concurrent_init_probe": "reviewer observed one WAL-lock failure in three runs outside this diff; primary reran the exact test ten times successfully, so recurrence remains unconfirmed",
+          "ruff_and_diff_check": "passed"
+        },
         "next_order": [
-          "fail_closed_tjm_user_path_resolution",
-          "active_exam_parallel_attempt_lock",
-          "cross_route_admin_and_answer_leakage_negative_tests",
-          "csrf_origin_validation"
+          "csrf_origin_validation",
+          "official_and_target_score_results"
         ]
       }
     }
@@ -487,7 +501,9 @@
   ],
   "residual_risks": [
     "catalog retirement is reconciled into each per-user learning DB before that user's next TJM response, not atomically fanned out to every inactive user DB",
-    "TJM request-time user path resolution, parallel-attempt answer-oracle prevention, and cookie CSRF validation remain open CP-13 findings",
+    "cookie-authenticated TJM admin mutations still require fail-closed Origin validation; Next and reverse-proxy Origin forwarding must be verified before claiming compatibility",
+    "Learning v4 preserves pre-existing duplicate active exams without guessing, and the active-exam guard is a concurrent API secrecy control rather than proctoring",
+    "the generic get_path_service admin fallback remains outside TJM and is not closed application-wide",
     "npm audit remains at high 3 and moderate 2; advisory reachability and fixes require CP-14 evidence",
     "Docker requirements installation does not consume uv.lock",
     "full mypy remains blocked by the baseline Python 3.11 and NumPy stub mismatch",

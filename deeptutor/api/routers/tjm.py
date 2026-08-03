@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import logging
 from typing import Any, Literal, Never
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, UploadFile, status
@@ -8,10 +9,9 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from deeptutor.api.routers.auth import require_admin, require_auth
-from deeptutor.multi_user.context import get_current_user
-from deeptutor.multi_user.paths import get_tjm_catalog_db
+from deeptutor.multi_user import paths as multi_user_paths
+from deeptutor.multi_user.context import get_current_user_or_none
 from deeptutor.services.auth import TokenPayload
-from deeptutor.services.path_service import get_path_service
 from deeptutor.tjm.attempts import AttemptNotFoundError, AttemptService
 from deeptutor.tjm.catalog import CatalogService
 from deeptutor.tjm.domain import (
@@ -27,6 +27,7 @@ from deeptutor.tjm.importer import ImportService
 from deeptutor.tjm.storage import CatalogStore, LearningStore
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 MAX_IMPORT_BYTES = 10 * 1024 * 1024
 
 
@@ -126,14 +127,33 @@ class ReviewAttemptRequest(_StrictModel):
 
 
 def get_catalog_service() -> CatalogService:
-    return CatalogService(CatalogStore(get_tjm_catalog_db()))
+    return CatalogService(CatalogStore(multi_user_paths.get_tjm_catalog_db()))
 
 
 def get_attempt_service(
+    _: TokenPayload | None = Depends(require_auth),
     catalog: CatalogService = Depends(get_catalog_service),
 ) -> AttemptService:
-    user = get_current_user()
-    learning = LearningStore(get_path_service().get_tjm_learning_db())
+    user = get_current_user_or_none()
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="TJM user context is unavailable",
+        )
+    try:
+        path_service = multi_user_paths.get_current_path_service()
+        if path_service.workspace_root.resolve() != user.scope.root.resolve():
+            raise RuntimeError("TJM request user and workspace scope do not match")
+        learning = LearningStore(path_service.get_tjm_learning_db())
+    except Exception as exc:
+        logger.error(
+            "TJM refused to fall back from the request user's workspace",
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="TJM user workspace is unavailable",
+        ) from exc
     return AttemptService(catalog, learning, owner_id=user.id)
 
 
@@ -367,7 +387,7 @@ def get_attempt(
 ) -> dict[str, Any]:
     try:
         return attempts.get_attempt(attempt_id)
-    except DomainValidationError as exc:
+    except (DomainValidationError, InvalidTransitionError) as exc:
         _raise_http(exc)
 
 

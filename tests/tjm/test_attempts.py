@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from threading import Barrier
 
 import pytest
 
@@ -115,6 +116,227 @@ def test_inactive_exam_cannot_start_attempt(tmp_path: Path) -> None:
 
     with pytest.raises(InvalidTransitionError, match="active"):
         service.start_attempt(exam_id="exam-attempt", mode="practice")
+
+
+def test_active_exam_blocks_parallel_exam_and_practice_attempts(tmp_path: Path) -> None:
+    catalog = _catalog(tmp_path)
+    _activate(catalog)
+    service = AttemptService(
+        catalog,
+        LearningStore(tmp_path / "learning.db"),
+        owner_id="u_alice",
+    )
+
+    active = service.start_attempt(exam_id="exam-attempt", mode="exam")
+
+    with pytest.raises(InvalidTransitionError, match="already in progress"):
+        service.start_attempt(exam_id="exam-attempt", mode="practice")
+    with pytest.raises(InvalidTransitionError, match="already in progress"):
+        service.start_attempt(exam_id="exam-attempt", mode="exam")
+    assert service.get_attempt(active["id"])["status"] == "in_progress"
+
+
+def test_existing_practice_is_frozen_only_while_exam_is_active(tmp_path: Path) -> None:
+    catalog = _catalog(tmp_path)
+    _activate(catalog)
+    service = AttemptService(
+        catalog,
+        LearningStore(tmp_path / "learning.db"),
+        owner_id="u_alice",
+    )
+
+    practice = service.start_attempt(exam_id="exam-attempt", mode="practice")
+    service.present_item(practice["id"], position=0)
+    initial_feedback = service.record_answer(
+        practice["id"],
+        position=0,
+        selected_option_key="B",
+        confidence=70,
+        elapsed_ms=100,
+        confirmed=True,
+        idempotency_key="practice-answer-before-exam",
+    )
+    exam = service.start_attempt(exam_id="exam-attempt", mode="exam")
+
+    with pytest.raises(InvalidTransitionError, match="already in progress"):
+        service.get_attempt(practice["id"])
+    with pytest.raises(InvalidTransitionError, match="already in progress"):
+        service.record_answer(
+            practice["id"],
+            position=0,
+            selected_option_key="B",
+            confidence=70,
+            elapsed_ms=100,
+            confirmed=True,
+            idempotency_key="practice-answer-before-exam",
+        )
+
+    service.submit_attempt(exam["id"])
+    resumed = service.record_answer(
+        practice["id"],
+        position=0,
+        selected_option_key="B",
+        confidence=70,
+        elapsed_ms=100,
+        confirmed=True,
+        idempotency_key="practice-answer-before-exam",
+    )
+
+    assert resumed == initial_feedback
+
+
+def test_active_exam_hides_same_exam_history_analytics_and_review_queue(
+    tmp_path: Path,
+) -> None:
+    catalog = _catalog(tmp_path)
+    _activate(catalog)
+    service = AttemptService(
+        catalog,
+        LearningStore(tmp_path / "learning.db"),
+        owner_id="u_alice",
+    )
+    practice = service.start_attempt(exam_id="exam-attempt", mode="practice")
+    service.submit_attempt(practice["id"])
+    assert service.list_review_queue()
+    assert service.analytics()["overall"]["total"] == 3
+
+    exam = service.start_attempt(exam_id="exam-attempt", mode="exam")
+
+    assert [attempt["id"] for attempt in service.list_history()] == [exam["id"]]
+    assert service.analytics()["overall"]["total"] == 0
+    assert service.list_review_queue() == []
+    with pytest.raises(InvalidTransitionError, match="already in progress"):
+        service.start_review_attempt(exam_id="exam-attempt")
+
+    service.submit_attempt(exam["id"])
+    assert {attempt["id"] for attempt in service.list_history()} == {
+        practice["id"],
+        exam["id"],
+    }
+    assert service.analytics()["overall"]["total"] == 6
+    assert service.list_review_queue()
+
+
+def test_active_exam_freezes_direct_access_and_submit_replay_for_prior_exam(
+    tmp_path: Path,
+) -> None:
+    catalog = _catalog(tmp_path)
+    _activate(catalog)
+    service = AttemptService(
+        catalog,
+        LearningStore(tmp_path / "learning.db"),
+        owner_id="u_alice",
+    )
+    prior_exam = service.start_attempt(exam_id="exam-attempt", mode="exam")
+    service.present_item(prior_exam["id"], position=0)
+    service.record_answer(
+        prior_exam["id"],
+        position=0,
+        selected_option_key="B",
+        confidence=90,
+        elapsed_ms=100,
+        confirmed=True,
+    )
+    submitted = service.submit_attempt(
+        prior_exam["id"],
+        idempotency_key="prior-exam-submit",
+    )
+    assert submitted["items"][0]["correct_option_key"] == "B"
+    active_exam = service.start_attempt(exam_id="exam-attempt", mode="exam")
+
+    with pytest.raises(InvalidTransitionError, match="already in progress"):
+        service.get_attempt(prior_exam["id"])
+    with pytest.raises(InvalidTransitionError, match="already in progress"):
+        service.submit_attempt(
+            prior_exam["id"],
+            idempotency_key="prior-exam-submit",
+        )
+
+    service.submit_attempt(active_exam["id"])
+    assert service.get_attempt(prior_exam["id"])["id"] == prior_exam["id"]
+
+
+def test_expired_exam_is_finalized_before_parallel_attempt_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    catalog = _catalog(tmp_path)
+    _activate(catalog)
+    service = AttemptService(
+        catalog,
+        LearningStore(tmp_path / "learning.db"),
+        owner_id="u_alice",
+    )
+    started_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    monkeypatch.setattr(attempts_module, "_now_datetime", lambda: started_at)
+    exam_attempt = service.start_attempt(exam_id="exam-attempt", mode="exam")
+
+    monkeypatch.setattr(
+        attempts_module,
+        "_now_datetime",
+        lambda: started_at + timedelta(seconds=602),
+    )
+    practice = service.start_attempt(exam_id="exam-attempt", mode="practice")
+
+    assert practice["status"] == "in_progress"
+    assert service.get_attempt(exam_attempt["id"])["status"] == "expired"
+
+
+def test_start_attempt_idempotent_replay_precedes_active_exam_lock(tmp_path: Path) -> None:
+    catalog = _catalog(tmp_path)
+    _activate(catalog)
+    learning = LearningStore(tmp_path / "learning.db")
+    service = AttemptService(catalog, learning, owner_id="u_alice")
+
+    first = service.start_attempt(
+        exam_id="exam-attempt",
+        mode="exam",
+        idempotency_key="same-active-exam",
+    )
+    replay = service.start_attempt(
+        exam_id="exam-attempt",
+        mode="exam",
+        idempotency_key="same-active-exam",
+    )
+
+    assert replay == first
+    with learning.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 1
+
+
+def test_parallel_exam_starts_create_only_one_active_attempt(tmp_path: Path) -> None:
+    catalog = _catalog(tmp_path)
+    _activate(catalog)
+    learning = LearningStore(tmp_path / "learning.db")
+    barrier = Barrier(2)
+
+    def start(key: str) -> str:
+        service = AttemptService(catalog, learning, owner_id="u_alice")
+        barrier.wait()
+        try:
+            return service.start_attempt(
+                exam_id="exam-attempt",
+                mode="exam",
+                idempotency_key=key,
+            )["id"]
+        except InvalidTransitionError:
+            return "blocked"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(start, ("parallel-exam-1", "parallel-exam-2")))
+
+    assert results.count("blocked") == 1
+    assert len({result for result in results if result != "blocked"}) == 1
+    with learning.connect() as conn:
+        assert (
+            conn.execute(
+                """
+            SELECT COUNT(*) FROM attempts
+            WHERE exam_id = 'exam-attempt' AND mode = 'exam' AND status = 'in_progress'
+            """
+            ).fetchone()[0]
+            == 1
+        )
 
 
 def test_start_attempt_replay_precedes_changed_catalog_and_normalizes_exam_id(
@@ -833,6 +1055,27 @@ def test_deadline_is_finalized_at_the_exact_instant_and_only_once(
 
     assert {result["status"] for result in results} == {"expired"}
     assert all(result["submitted_at"] == attempt["deadline_at"] for result in results)
+    with learning.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM review_queue").fetchone()[0] == 3
+
+
+def test_direct_submit_at_exact_deadline_returns_expired_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    catalog = _catalog(tmp_path)
+    _activate(catalog)
+    learning = LearningStore(tmp_path / "alice.db")
+    service = AttemptService(catalog, learning, owner_id="u_alice")
+    clock = {"now": datetime(2026, 1, 1, tzinfo=timezone.utc)}
+    monkeypatch.setattr(attempts_module, "_now_datetime", lambda: clock["now"])
+    attempt = service.start_attempt(exam_id="exam-attempt", mode="exam")
+    clock["now"] = datetime.fromisoformat(attempt["deadline_at"].replace("Z", "+00:00"))
+
+    finalized = service.submit_attempt(attempt["id"])
+
+    assert finalized["status"] == "expired"
+    assert finalized["submitted_at"] == attempt["deadline_at"]
     with learning.connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM review_queue").fetchone()[0] == 3
 
