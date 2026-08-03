@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "updated_at": "2026-08-03_17:03",
+  "updated_at": "2026-08-03_17:05",
   "timezone": "Asia/Tokyo",
   "status": "in_progress",
   "current_checkpoint": "CP-13",
@@ -474,10 +474,10 @@
           "catalog_concurrent_init_probe": "reviewer observed one WAL-lock failure in three runs outside this diff; primary reran the exact test ten times successfully, so recurrence remains unconfirmed",
           "ruff_and_diff_check": "passed"
         },
-        "next_order": ["official_and_target_score_results"]
+        "next_order": ["tjm_japanese_ui", "behavioral_e2e", "voice_automation"]
       },
       "official_and_target_score_results": {
-        "status": "in_progress",
+        "status": "completed",
         "catalog_schema_version": 5,
         "learning_schema_version": 5,
         "official_score_policy": "score and human-verifiable evidence source are paired; unknown values are never inferred",
@@ -501,11 +501,12 @@
           "web_typecheck_and_targeted_lint": "passed",
           "ruff_and_diff_check": "passed",
           "storage_review": "149 TJM tests passed with no unresolved P0/P1",
-          "cross_layer_review": "no unresolved P0/P1; reviewer independently passed Python 229, Web 407, Ruff check and format-check, TypeScript, targeted ESLint, and diff check"
+          "cross_layer_review": "no unresolved P0/P1; reviewer independently passed Python 229, Web 407, Ruff check and format-check, TypeScript, targeted ESLint, and diff check",
+          "publisher_clone": "from clean 737e130d under Python 3.13: Python 229, Web 407, TypeScript, targeted ESLint, Ruff, format, JSON parse, and diff check passed"
         },
-        "remaining_findings": [
-          "publisher-clone verification, commit, and push are pending"
-        ]
+        "remaining_findings": [],
+        "remote_commit": "f2366799",
+        "next_order": ["tjm_japanese_ui", "behavioral_e2e", "voice_automation"]
       }
     }
   },
@@ -552,6 +553,7 @@
   ],
   "publication": {
     "feature_commit": "80339c862d11c9432ca9c20be7b8b6bff6c98536",
+    "latest_remote_commit": "f2366799",
     "remote_branch": "origin/tjm/implementation",
     "pull_request": {
       "number": 1,

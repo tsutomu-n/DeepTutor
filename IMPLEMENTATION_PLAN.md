@@ -1,6 +1,6 @@
 # TJM 実装計画
 
-更新: 2026-08-03_17:03 (Asia/Tokyo)
+更新: 2026-08-03_17:05 (Asia/Tokyo)
 
 ## 1. 状態
 
@@ -496,6 +496,8 @@ Webは正式正解をローカル判定せず、practiceの確定応答または
 | Web fail-closed | `normalizeAttemptForClient()` | 未知のmode/status/snapshot/scoring policy、snapshotと閾値・出典・目標の不一致、item全数・廃止状態・件数・正誤矛盾を肯定結果として表示しない。後日invalid化された正規履歴だけは境界内のraw得点を保持し、両結果を未判定にする |
 | 採点・結果回帰 | Python統合、Web node tests、TypeScript、対象ESLint、Ruff、差分検査 | Python 229 passed、215 warnings、Web 407 passed。型検査、対象lint、`ruff check`、`ruff format --check`、`git diff --check`成功 |
 | 採点・結果独立レビュー | storage監査、cross-layer再現、修正後のfocused再実行 | 未解決P0/P1なし。reviewer側でもPython 229 passed、Web 407 passed、Ruff、format、TypeScript、対象ESLint、差分検査を確認。未知runtime契約、snapshot/result drift、item/得点矛盾、確定後invalid化raw履歴をREDで修復 |
+| clean publisher検証 | cleanな`737e130d`から差分を同期したpublisher clone、Python 3.13 | Python 229 passed、215 warnings、Web 407 passed、TypeScript、対象ESLint、Ruff、format、JSON parse、`git diff --check`成功 |
+| 採点・結果commit | `f2366799 feat: separate official and practice results` | `origin/tjm/implementation`へpush済み。PR #1はDraftのまま、merge・Ready化・release未実施 |
 
 ## 17. 既存リスクと今回の扱い
 
