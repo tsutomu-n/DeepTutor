@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+import json
 from pathlib import Path
 from threading import Barrier
 
@@ -27,19 +28,24 @@ from deeptutor.tjm.storage import CatalogStore, LearningStore
 
 
 def _catalog(tmp_path: Path) -> CatalogService:
-    catalog = CatalogService(CatalogStore(tmp_path / "catalog.db"))
-    catalog.create_exam(
+    class LegacyCatalogStore(CatalogStore):
+        migrations = CatalogStore.migrations[:4]
+
+    db_path = tmp_path / "catalog.db"
+    legacy_catalog = CatalogService(LegacyCatalogStore(db_path))
+    legacy_catalog.create_exam(
         ExamSpec(
             id="exam-attempt",
             title="Attempt Exam",
             duration_seconds=601,
             question_count=3,
-            pass_score=2,
             blueprint={"area-a": 2, "area-b": 1},
         ),
         actor_id="admin-1",
     )
-    return catalog
+    with legacy_catalog.store.connect() as conn:
+        conn.execute("UPDATE exam_definitions SET pass_score = 2 WHERE id = 'exam-attempt'")
+    return CatalogService(CatalogStore(db_path))
 
 
 def _publish(catalog: CatalogService, stable_id: str, area: str, correct: str = "B") -> str:
@@ -108,6 +114,293 @@ def test_attempt_order_and_exam_snapshot_survive_service_restart(tmp_path: Path)
     started = datetime.fromisoformat(created["started_at"].replace("Z", "+00:00"))
     deadline = datetime.fromisoformat(created["deadline_at"].replace("Z", "+00:00"))
     assert (deadline - started).total_seconds() == 601
+
+
+def test_legacy_pass_score_is_lazily_seeded_and_explicit_null_never_resurrects(
+    tmp_path: Path,
+) -> None:
+    catalog = _catalog(tmp_path)
+    _activate(catalog)
+    learning = LearningStore(tmp_path / "alice.db")
+    service = AttemptService(catalog, learning, owner_id="u_alice")
+
+    assert service.list_exam_preferences() == [
+        {
+            "exam_id": "exam-attempt",
+            "practice_target_score": 2,
+            "origin": "legacy_pass_score",
+            "updated_at": None,
+        }
+    ]
+    with learning.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM exam_preferences").fetchone()[0] == 0
+
+    first = service.start_attempt(exam_id="exam-attempt", mode="practice")
+    snapshot = first["exam_snapshot"]
+    assert first["result"] is None
+    assert snapshot["snapshot_schema_version"] == 2
+    assert snapshot["maximum_score"] == 3
+    assert snapshot["scoring_policy"] == {
+        "type": "unit_correct",
+        "version": 1,
+        "points_per_item": 1,
+    }
+    assert snapshot["practice_target_score"] == 2
+    assert snapshot["practice_target_origin"] == "legacy_pass_score"
+    assert "pass_score" not in first["exam_snapshot"]
+    with learning.connect() as conn:
+        stored = conn.execute(
+            """
+            SELECT practice_target_score, origin, updated_at
+            FROM exam_preferences WHERE exam_id = 'exam-attempt'
+            """
+        ).fetchone()
+        assert stored["practice_target_score"] == 2
+        assert stored["origin"] == "legacy_pass_score"
+        assert stored["updated_at"]
+
+    explicit_same_value = service.set_exam_preference("exam-attempt", practice_target_score=2)
+    assert explicit_same_value["origin"] == "user"
+    cleared = service.set_exam_preference("exam-attempt", practice_target_score=None)
+    assert cleared["origin"] == "user"
+    assert cleared["practice_target_score"] is None
+    second = service.start_attempt(exam_id="exam-attempt", mode="practice")
+    assert second["exam_snapshot"]["practice_target_score"] is None
+    assert second["exam_snapshot"]["practice_target_origin"] == "user"
+    assert service.list_exam_preferences()[0]["origin"] == "user"
+
+
+def test_ambiguous_legacy_real_score_is_not_guessed_as_a_personal_target(
+    tmp_path: Path,
+) -> None:
+    class LegacyCatalogStore(CatalogStore):
+        migrations = CatalogStore.migrations[:4]
+
+    db_path = tmp_path / "legacy-real.db"
+    legacy_catalog = CatalogService(LegacyCatalogStore(db_path))
+    legacy_catalog.create_exam(
+        ExamSpec(
+            id="legacy-real",
+            title="Legacy Real",
+            duration_seconds=60,
+            question_count=3,
+        ),
+        actor_id="admin-1",
+    )
+    with legacy_catalog.store.connect() as conn:
+        conn.execute("UPDATE exam_definitions SET pass_score = 1.9 WHERE id = 'legacy-real'")
+    catalog = CatalogService(CatalogStore(db_path))
+    learning = LearningStore(tmp_path / "alice.db")
+    service = AttemptService(catalog, learning, owner_id="u_alice")
+
+    assert service.list_exam_preferences() == [
+        {
+            "exam_id": "legacy-real",
+            "practice_target_score": None,
+            "origin": None,
+            "updated_at": None,
+        }
+    ]
+    with learning.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM exam_preferences").fetchone()[0] == 0
+
+
+def test_exam_preferences_are_isolated_by_learning_database(tmp_path: Path) -> None:
+    catalog = _catalog(tmp_path)
+    _activate(catalog)
+    alice = AttemptService(catalog, LearningStore(tmp_path / "alice.db"), owner_id="u_alice")
+    bob = AttemptService(catalog, LearningStore(tmp_path / "bob.db"), owner_id="u_bob")
+
+    alice.set_exam_preference("exam-attempt", practice_target_score=3)
+
+    assert alice.list_exam_preferences()[0] | {"updated_at": None} == {
+        "exam_id": "exam-attempt",
+        "practice_target_score": 3,
+        "origin": "user",
+        "updated_at": None,
+    }
+    assert bob.list_exam_preferences() == [
+        {
+            "exam_id": "exam-attempt",
+            "practice_target_score": 2,
+            "origin": "legacy_pass_score",
+            "updated_at": None,
+        }
+    ]
+
+
+def test_user_preference_retry_is_idempotent_including_explicit_null(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    catalog = _catalog(tmp_path)
+    _activate(catalog)
+    service = AttemptService(
+        catalog,
+        LearningStore(tmp_path / "alice.db"),
+        owner_id="u_alice",
+    )
+    clock = {"now": datetime(2026, 1, 1, tzinfo=timezone.utc)}
+    monkeypatch.setattr(attempts_module, "_now_datetime", lambda: clock["now"])
+
+    first = service.set_exam_preference("exam-attempt", practice_target_score=2)
+    clock["now"] += timedelta(days=1)
+    replay = service.set_exam_preference("exam-attempt", practice_target_score=2)
+    cleared = service.set_exam_preference("exam-attempt", practice_target_score=None)
+    clock["now"] += timedelta(days=1)
+    cleared_replay = service.set_exam_preference("exam-attempt", practice_target_score=None)
+
+    assert replay == first
+    assert cleared_replay == cleared
+    assert cleared["updated_at"] != first["updated_at"]
+
+
+def test_final_result_uses_frozen_official_and_personal_thresholds(
+    tmp_path: Path,
+) -> None:
+    catalog = _catalog(tmp_path)
+    _activate(catalog)
+    initial_source = {"title": "2026 standard", "publisher": "Test board"}
+    catalog.set_official_passing_score(
+        "exam-attempt",
+        score=2,
+        source=initial_source,
+        actor_id="admin-1",
+    )
+    service = AttemptService(
+        catalog,
+        LearningStore(tmp_path / "alice.db"),
+        owner_id="u_alice",
+    )
+    service.set_exam_preference("exam-attempt", practice_target_score=2)
+    attempt = service.start_attempt(exam_id="exam-attempt", mode="exam")
+    for position in (0, 1):
+        service.present_item(attempt["id"], position=position)
+        service.record_answer(
+            attempt["id"],
+            position=position,
+            selected_option_key="B",
+            confidence=80,
+            elapsed_ms=100,
+            confirmed=True,
+        )
+
+    catalog.set_official_passing_score(
+        "exam-attempt",
+        score=3,
+        source={"title": "2027 standard", "publisher": "Test board"},
+        actor_id="admin-1",
+    )
+    service.set_exam_preference("exam-attempt", practice_target_score=3)
+    submitted = service.submit_attempt(attempt["id"], idempotency_key="frozen-threshold-submit")
+
+    assert submitted["result"] == {
+        "score": 2,
+        "maximum_score": 3,
+        "validity": "eligible",
+        "official": {
+            "status": "passed",
+            "threshold": 2,
+            "source": initial_source,
+            "not_evaluated_reason": None,
+        },
+        "practice_target": {
+            "status": "achieved",
+            "threshold": 2,
+            "not_evaluated_reason": None,
+        },
+    }
+    assert service.get_attempt(attempt["id"])["result"] == submitted["result"]
+    assert service.list_history()[0]["result"] == submitted["result"]
+    later = service.start_attempt(exam_id="exam-attempt", mode="practice")
+    later_snapshot = later["exam_snapshot"]
+    assert later_snapshot["official_passing_score"] == 3
+    assert later_snapshot["practice_target_score"] == 3
+    later_result = service.submit_attempt(later["id"])["result"]
+    assert later_result["official"]["status"] == "not_evaluated"
+    assert later_result["practice_target"]["status"] == "not_achieved"
+
+
+def test_legacy_attempt_result_never_promotes_pass_score_to_official_standard(
+    tmp_path: Path,
+) -> None:
+    catalog = _catalog(tmp_path)
+    _activate(catalog)
+    learning_path = tmp_path / "alice.db"
+
+    class LegacyLearningStore(LearningStore):
+        migrations = LearningStore.migrations[:4]
+
+    legacy_learning = LegacyLearningStore(learning_path)
+    versions = catalog.selected_published_versions("exam-attempt")
+    with legacy_learning.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO attempts (
+                id, exam_id, mode, status, exam_snapshot_json,
+                started_at, submitted_at, correct_count, total_count
+            ) VALUES (
+                'legacy-attempt', 'exam-attempt', 'exam', 'submitted',
+                '{"question_count":3,"pass_score":2}',
+                '2026-01-01T00:00:00Z', '2026-01-01T00:10:00Z', 3, 3
+            )
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO attempt_items (
+                attempt_id, position, question_version_id, area,
+                catalog_disposition
+            ) VALUES ('legacy-attempt', ?, ?, ?, 'current')
+            """,
+            [
+                (position, version["id"], version["area"])
+                for position, version in enumerate(versions)
+            ],
+        )
+    learning = LearningStore(learning_path)
+    service = AttemptService(catalog, learning, owner_id="u_alice")
+
+    result = service.get_attempt("legacy-attempt")["result"]
+
+    assert result["score"] == 3
+    assert result["maximum_score"] == 3
+    assert result["official"] == {
+        "status": "not_evaluated",
+        "threshold": None,
+        "source": None,
+        "not_evaluated_reason": "legacy_score_ambiguous",
+    }
+    assert result["practice_target"] == {
+        "status": "achieved",
+        "threshold": 2,
+        "not_evaluated_reason": None,
+    }
+
+    legacy_response = service.get_attempt("legacy-attempt")
+    legacy_response.pop("result")
+    request = {"exam_id": "exam-attempt", "mode": "exam"}
+    with learning.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO learning_commands (
+                idempotency_key, command_type, target_id, request_hash,
+                response_json, created_at
+            ) VALUES (?, 'start_attempt', 'exam-attempt:exam', ?, ?, ?)
+            """,
+            (
+                "legacy-result-replay",
+                service._request_hash(request),
+                json.dumps(legacy_response, ensure_ascii=False, sort_keys=True),
+                "2026-01-01T00:00:00Z",
+            ),
+        )
+    replay = service.start_attempt(
+        exam_id="exam-attempt",
+        mode="exam",
+        idempotency_key="legacy-result-replay",
+    )
+    assert replay["result"] == result
 
 
 def test_inactive_exam_cannot_start_attempt(tmp_path: Path) -> None:
@@ -853,6 +1146,66 @@ def test_submit_command_replay_returns_original_result_without_duplicate_queue(
         assert conn.execute("SELECT COUNT(*) FROM learning_commands").fetchone()[0] == 1
 
 
+def test_submit_replay_revokes_pass_after_content_invalidation_without_regrading_raw_score(
+    tmp_path: Path,
+) -> None:
+    catalog = _catalog(tmp_path)
+    _activate(catalog)
+    catalog.set_official_passing_score(
+        "exam-attempt",
+        score=1,
+        source={"title": "Passing standard", "publisher": "Test board"},
+        actor_id="admin-1",
+    )
+    service = AttemptService(
+        catalog,
+        LearningStore(tmp_path / "alice.db"),
+        owner_id="u_alice",
+    )
+    attempt = service.start_attempt(
+        exam_id="exam-attempt",
+        mode="exam",
+        idempotency_key="start-before-score-invalidation",
+    )
+    service.present_item(attempt["id"], position=0)
+    service.record_answer(
+        attempt["id"],
+        position=0,
+        selected_option_key="B",
+        confidence=80,
+        elapsed_ms=100,
+        confirmed=True,
+    )
+    first = service.submit_attempt(attempt["id"], idempotency_key="submit-before-invalidation")
+    assert first["result"]["official"]["status"] == "passed"
+
+    catalog.retire_question_version(
+        attempt["items"][0]["question_version_id"],
+        actor_id="admin-1",
+        reason="invalid_content",
+        note="Fixture invalidation.",
+    )
+    replay = service.submit_attempt(attempt["id"], idempotency_key="submit-before-invalidation")
+
+    assert replay["correct_count"] == 1
+    assert replay["total_count"] == 3
+    assert replay["result"]["score"] == 1
+    assert replay["result"]["maximum_score"] == 3
+    assert replay["result"]["validity"] == "content_invalidated"
+    assert replay["result"]["official"]["status"] == "not_evaluated"
+    assert replay["result"]["official"]["not_evaluated_reason"] == "content_invalidated"
+    assert replay["result"]["practice_target"]["status"] == "not_evaluated"
+    assert replay["result"]["practice_target"]["not_evaluated_reason"] == "content_invalidated"
+    start_replay = service.start_attempt(
+        exam_id="exam-attempt",
+        mode="exam",
+        idempotency_key="start-before-score-invalidation",
+    )
+    assert start_replay["status"] == "in_progress"
+    assert start_replay["content_invalidated_count"] == 1
+    assert start_replay["result"] is None
+
+
 def test_voice_candidate_requires_explicit_confirmation_before_answer_changes(
     tmp_path: Path,
 ) -> None:
@@ -1008,18 +1361,86 @@ def test_unknown_choice_creates_no_answer_event(tmp_path: Path) -> None:
         )
 
 
-def test_expired_exam_rejects_new_answers_but_submits_existing_state(tmp_path: Path) -> None:
+def test_attempt_service_rejects_boolean_coercion_at_the_sdk_boundary(
+    tmp_path: Path,
+) -> None:
+    catalog = _catalog(tmp_path)
+    _activate(catalog)
+    service = AttemptService(
+        catalog,
+        LearningStore(tmp_path / "alice.db"),
+        owner_id="u_alice",
+    )
+    attempt = service.start_attempt(exam_id="exam-attempt", mode="practice")
+    service.present_item(attempt["id"], position=0)
+
+    with pytest.raises(DomainValidationError, match="position"):
+        service.present_item(attempt["id"], position=False)
+    with pytest.raises(DomainValidationError, match="position"):
+        service.record_answer(
+            attempt["id"],
+            position=False,
+            selected_option_key="A",
+            confidence=50,
+            elapsed_ms=0,
+            confirmed=True,
+        )
+    with pytest.raises(DomainValidationError, match="confirmed"):
+        service.record_answer(
+            attempt["id"],
+            position=0,
+            selected_option_key="A",
+            confidence=50,
+            elapsed_ms=0,
+            confirmed=1,
+        )
+    with pytest.raises(DomainValidationError, match="elapsed_ms"):
+        service.record_answer(
+            attempt["id"],
+            position=0,
+            selected_option_key="A",
+            confidence=50,
+            elapsed_ms=False,
+            confirmed=True,
+        )
+    with pytest.raises(DomainValidationError, match="confidence"):
+        service.record_answer(
+            attempt["id"],
+            position=0,
+            selected_option_key="A",
+            confidence=True,
+            elapsed_ms=0,
+            confirmed=True,
+        )
+    with pytest.raises(DomainValidationError, match="transcript"):
+        service.record_voice_candidate(attempt["id"], position=0, transcript=1, elapsed_ms=0)
+    with pytest.raises(DomainValidationError, match="candidate_id"):
+        service.confirm_voice_candidate(
+            attempt["id"],
+            position=0,
+            candidate_id=False,
+            confidence=None,
+            elapsed_ms=0,
+        )
+    with pytest.raises(DomainValidationError, match="candidate_id"):
+        service.cancel_voice_candidate(attempt["id"], position=0, candidate_id=False)
+    with pytest.raises(DomainValidationError, match="review limit"):
+        service.start_review_attempt(exam_id="exam-attempt", limit=True)
+
+
+def test_expired_exam_rejects_new_answers_but_submits_existing_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     catalog = _catalog(tmp_path)
     _activate(catalog)
     learning = LearningStore(tmp_path / "alice.db")
     service = AttemptService(catalog, learning, owner_id="u_alice")
+    clock = {"now": datetime(2026, 1, 1, tzinfo=timezone.utc)}
+    monkeypatch.setattr(attempts_module, "_now_datetime", lambda: clock["now"])
     attempt = service.start_attempt(exam_id="exam-attempt", mode="exam")
-    expired_at = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
-    with learning.connect() as conn:
-        conn.execute(
-            "UPDATE attempts SET deadline_at = ? WHERE id = ?",
-            (expired_at, attempt["id"]),
-        )
+    deadline = datetime.fromisoformat(attempt["deadline_at"].replace("Z", "+00:00"))
+    clock["now"] = deadline + timedelta(seconds=1)
 
     with pytest.raises(AttemptExpiredError):
         service.record_answer(
@@ -1076,6 +1497,10 @@ def test_direct_submit_at_exact_deadline_returns_expired_result(
 
     assert finalized["status"] == "expired"
     assert finalized["submitted_at"] == attempt["deadline_at"]
+    assert finalized["result"]["score"] == 0
+    assert finalized["result"]["maximum_score"] == 3
+    assert finalized["result"]["official"]["status"] == "not_evaluated"
+    assert finalized["result"]["practice_target"]["status"] == "not_achieved"
     with learning.connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM review_queue").fetchone()[0] == 3
 

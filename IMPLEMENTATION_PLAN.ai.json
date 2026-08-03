@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "updated_at": "2026-08-03_15:33",
+  "updated_at": "2026-08-03_17:03",
   "timezone": "Asia/Tokyo",
   "status": "in_progress",
   "current_checkpoint": "CP-13",
@@ -41,7 +41,10 @@
     "復習attemptは開始時にlinkしたqueue行だけを完了し、後発行と既にdismiss済みの行を変更しない",
     "superseded版の過去得点と開始済みattemptは有効だが、新規出題と復習から除外し新版へ自動移送しない",
     "invalid_content版はraw履歴と保存得点を削除せず、正式採点表示、分析、新規回答から除外する",
-    "過去に保存した冪等responseも現在invalid_contentなら安全なprojectionへ再投影し、正式正解や旧eligible状態を復活させない"
+    "過去に保存した冪等responseも現在invalid_contentなら安全なprojectionへ再投影し、正式正解や旧eligible状態を復活させない",
+    "公式点は検証可能な根拠資料と一体で扱い、未知の値を推測しない",
+    "公式点と根拠資料、個人目標と由来、最大点、採点方式はattempt開始時に固定し、後の設定変更で過去結果を変えない",
+    "公式合否と個人目標達成を別々に評価し、一方を他方の代替として表示しない"
   ],
   "planned_storage": {
     "engine": "SQLite",
@@ -72,6 +75,7 @@
           "attempts",
           "attempt_items",
           "answer_events",
+          "exam_preferences",
           "review_queue",
           "review_attempt_queue_links",
           "learning_commands"
@@ -453,7 +457,7 @@
           "pre-existing practice, review, and finalized exam attempts are frozen only while another same-exam exam is active",
           "same-exam direct reads, prior submit replay, history, analytics, review queue, and idempotent feedback replay cannot expose grading data during an active exam",
           "expired exams are finalized before the start guard, direct submit at the exact deadline remains atomic, and parallel exam starts create one active attempt",
-          "all 19 TJM mutations require one exact allowlisted Origin for cookie-only authentication while validated single-Bearer and auth-disabled clients retain compatibility",
+          "all 21 TJM mutations require one exact allowlisted Origin for cookie-only authentication while validated single-Bearer and auth-disabled clients retain compatibility",
           "authentication-enabled CORS rejects configured wildcard or opaque origins at startup and never passes them to credentialed CORSMiddleware",
           "the network settings API rejects wildcard or opaque credentialed origins before saving and leaves the existing network configuration unchanged"
         ],
@@ -462,7 +466,7 @@
         "outside_scope": "the generic get_path_service fallback remains available outside TJM and requires a separate application-wide audit",
         "remaining_findings": [],
         "evidence": {
-          "tjm_api_tests": {"passed": 160, "warnings": 215},
+          "tjm_api_tests": {"passed": 229, "warnings": 215},
           "independent_review": "initial review found credentialed wildcard CORS and unguarded learner mutations; re-review found delayed restart failure from unsafe network-settings writes; after all three fixes the final read-only review found no unresolved P0/P1 or settings/API regression and reran 11 focused tests successfully",
           "cors_middleware": "cookie request from an unlisted Origin receives no ACAO and its preflight fails 400; an explicitly listed concrete Origin succeeds",
           "network_settings": "when authentication is enabled, wildcard and opaque origins fail 422 before persistence and prior ports and allowlist remain unchanged",
@@ -470,8 +474,37 @@
           "catalog_concurrent_init_probe": "reviewer observed one WAL-lock failure in three runs outside this diff; primary reran the exact test ten times successfully, so recurrence remains unconfirmed",
           "ruff_and_diff_check": "passed"
         },
-        "next_order": [
-          "official_and_target_score_results"
+        "next_order": ["official_and_target_score_results"]
+      },
+      "official_and_target_score_results": {
+        "status": "in_progress",
+        "catalog_schema_version": 5,
+        "learning_schema_version": 5,
+        "official_score_policy": "score and human-verifiable evidence source are paired; unknown values are never inferred",
+        "preference_policy": "personal targets are stored per user; an explicit null tombstone prevents a legacy value from reappearing",
+        "legacy_policy": "legacy pass_score never becomes official; only a valid integer may seed a personal target, while REAL or corrupt values remain ambiguous",
+        "snapshot_policy": "schema v2 freezes maximum score, official score and source, personal target and origin, and exact unit-correct scoring policy",
+        "result_policy": "official pass/fail and personal target achievement are separate deterministic dimensions and AI is never consulted",
+        "result_reasons": [
+          "official_score_unavailable",
+          "practice_target_unset",
+          "mode_not_eligible",
+          "content_invalidated",
+          "incomplete_score_scope",
+          "legacy_score_ambiguous"
+        ],
+        "database_boundary": "v5 preflight, validator UDFs, immutable triggers, recursive trigger enforcement, exact item scope, and finalized-state guards reject invalid migration history and direct-SQL invariant bypasses",
+        "web_boundary": "unknown runtime enums, snapshot or scoring policy versions, snapshot/result threshold or source drift, and item/count/grade contradictions cannot produce a positive result; bounded raw counts remain visible after post-finalization invalidation",
+        "local_evidence": {
+          "python": {"passed": 229, "warnings": 215},
+          "web_node_tests": {"passed": 407},
+          "web_typecheck_and_targeted_lint": "passed",
+          "ruff_and_diff_check": "passed",
+          "storage_review": "149 TJM tests passed with no unresolved P0/P1",
+          "cross_layer_review": "no unresolved P0/P1; reviewer independently passed Python 229, Web 407, Ruff check and format-check, TypeScript, targeted ESLint, and diff check"
+        },
+        "remaining_findings": [
+          "publisher-clone verification, commit, and push are pending"
         ]
       }
     }
@@ -492,7 +525,7 @@
     {
       "id": "C",
       "name": "product_acceptance",
-      "status": "pending_external_parts",
+      "status": "pending_internal_and_external",
       "requires": ["tjm_japanese_ui", "behavioral_e2e", "voice_automation", "target_device_acceptance", "licensed_takken_acceptance"]
     },
     {
@@ -512,6 +545,9 @@
     "Docker requirements installation does not consume uv.lock",
     "full mypy remains blocked by the baseline Python 3.11 and NumPy stub mismatch",
     "licensed Takken question data and the sherpa model are not bundled",
+    "official passing scores and evidence sources for licensed Takken data are not bundled, so real-data official results remain unavailable until acceptance data is supplied",
+    "direct SQL can create an empty attempt id, although first-party APIs always generate att_<uuid> ids and this does not alter score facts; malicious local-DB tamper resistance is not claimed",
+    "the original meaning of an integer legacy pass_score is unprovable; it is never promoted to an official score and only seeds a user-editable personal target that an explicit null tombstone can permanently clear",
     "TJM workspace detailed copy is English-first; only global navigation follows the existing en/zh catalog"
   ],
   "publication": {

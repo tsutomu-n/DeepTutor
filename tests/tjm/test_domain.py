@@ -16,7 +16,9 @@ from deeptutor.tjm.domain import (
     ExamSpec,
     ImmutableVersionError,
     InvalidTransitionError,
+    OfficialPassingScoreSource,
     QuestionVersionDraft,
+    evaluate_attempt_result,
     grade_responses,
 )
 from deeptutor.tjm.storage import CatalogStore
@@ -32,7 +34,6 @@ def _exam() -> ExamSpec:
         title="License Alpha",
         duration_seconds=413,
         question_count=3,
-        pass_score=2,
         blueprint={"rules": 2, "practice": 1},
     )
 
@@ -130,7 +131,6 @@ def test_draft_exam_definition_can_change_but_active_definition_is_immutable(
         description="Configured outside core code.",
         duration_seconds=509,
         question_count=4,
-        pass_score=3,
         blueprint={"rules": 3, "practice": 1},
     )
 
@@ -166,9 +166,11 @@ def test_draft_exam_definition_can_change_but_active_definition_is_immutable(
     "spec",
     [
         ExamSpec(id="x", title="", duration_seconds=60, question_count=1),
+        ExamSpec(id="exam/a", title="X", duration_seconds=60, question_count=1),
+        ExamSpec(id="..", title="X", duration_seconds=60, question_count=1),
+        ExamSpec(id="試験", title="X", duration_seconds=60, question_count=1),
         ExamSpec(id="x", title="X", duration_seconds=0, question_count=1),
         ExamSpec(id="x", title="X", duration_seconds=60, question_count=0),
-        ExamSpec(id="x", title="X", duration_seconds=60, question_count=2, pass_score=3),
         ExamSpec(
             id="x",
             title="X",
@@ -451,6 +453,10 @@ def test_legacy_review_is_audit_only_until_current_revision_is_reviewed(tmp_path
     assert migrated["content_revision"] == 1
     assert migrated["reviewed_by"] is None
     assert migrated["review_binding_state"] == "legacy_unverified"
+    exam = catalog.get_exam("license-alpha")
+    assert "pass_score" not in exam
+    assert exam["official_passing_score"] is None
+    assert catalog.get_legacy_practice_target("license-alpha") == 1
     with pytest.raises(InvalidTransitionError, match="current revision must be reviewed"):
         catalog.publish_question_version(version_id, actor_id="publisher")
 
@@ -673,3 +679,288 @@ def test_deterministic_grading_uses_only_answer_key_and_confirmed_responses() ->
 
     with pytest.raises(DomainValidationError, match="unknown question version"):
         grade_responses(answer_key={"version-1": "B"}, responses={"other": "B"})
+
+
+def test_official_passing_score_is_separate_from_exam_shape_and_requires_safe_source(
+    tmp_path: Path,
+) -> None:
+    catalog = _catalog(tmp_path)
+    created = catalog.create_exam(_exam(), actor_id="admin")
+
+    assert "pass_score" not in created
+    assert created["official_passing_score"] is None
+    assert created["official_passing_score_source"] is None
+
+    source = OfficialPassingScoreSource(
+        title="  Published examination standard  ",
+        publisher="  Licensing Board  ",
+        url=" https://example.test/standards/alpha?year=2026 ",
+        published_at=" 2026-01-15 ",
+    )
+    updated = catalog.set_official_passing_score(
+        "license-alpha", score=2, source=source, actor_id="admin"
+    )
+
+    assert updated["official_passing_score"] == 2
+    assert updated["official_passing_score_source"] == {
+        "title": "Published examination standard",
+        "publisher": "Licensing Board",
+        "url": "https://example.test/standards/alpha?year=2026",
+        "published_at": "2026-01-15",
+    }
+    assert updated["revision"] == 2
+
+    unchanged = catalog.set_official_passing_score(
+        "license-alpha",
+        score=2,
+        source={
+            "publisher": "Licensing Board",
+            "title": "Published examination standard",
+            "published_at": "2026-01-15",
+            "url": "https://example.test/standards/alpha?year=2026",
+        },
+        actor_id="admin",
+    )
+    assert unchanged["revision"] == 2
+
+
+def test_exam_create_and_draft_replace_persist_official_score_atomically(
+    tmp_path: Path,
+) -> None:
+    catalog = _catalog(tmp_path)
+    original = replace(
+        _exam(),
+        official_passing_score=2,
+        official_passing_score_source=OfficialPassingScoreSource(
+            title="Initial standard", publisher="Board"
+        ),
+    )
+
+    created = catalog.create_exam(original, actor_id="admin")
+    assert created["official_passing_score"] == 2
+    assert created["official_passing_score_source"] == {
+        "title": "Initial standard",
+        "publisher": "Board",
+    }
+    assert created["revision"] == 1
+
+    updated = catalog.replace_exam(
+        "license-alpha",
+        replace(
+            original,
+            title="Revised exam",
+            official_passing_score=1,
+            official_passing_score_source={
+                "title": "Revised standard",
+                "publisher": "Board",
+            },
+        ),
+        actor_id="admin",
+    )
+    assert updated["title"] == "Revised exam"
+    assert updated["official_passing_score"] == 1
+    assert updated["official_passing_score_source"]["title"] == "Revised standard"
+    assert updated["revision"] == 2
+
+
+@pytest.mark.parametrize(
+    ("score", "source"),
+    [
+        (True, {"title": "Standard", "publisher": "Board"}),
+        (-1, {"title": "Standard", "publisher": "Board"}),
+        (4, {"title": "Standard", "publisher": "Board"}),
+        (1, None),
+        (None, {"title": "Standard", "publisher": "Board"}),
+        (1, {"title": "", "publisher": "Board"}),
+        (1, {"title": "Standard", "publisher": ""}),
+        (1, {"title": "Standard", "publisher": "Board", "url": "javascript:alert(1)"}),
+        (1, {"title": "Standard", "publisher": "Board", "url": "data:text/html,x"}),
+        (1, {"title": "Standard", "publisher": "Board", "url": "file:///tmp/x"}),
+        (1, {"title": "Standard", "publisher": "Board", "url": "/relative"}),
+        (1, {"title": "Standard", "publisher": "Board", "url": "https://exa mple.test"}),
+        (1, {"title": "Standard", "publisher": "Board", "url": "https://u:p@example.test"}),
+        (1, {"title": "Standard", "publisher": "Board", "published_at": " "}),
+        (1, {"title": "Standard", "publisher": "Board", "extra": "guess"}),
+    ],
+)
+def test_official_passing_score_rejects_unsafe_or_ambiguous_values(
+    tmp_path: Path, score: object, source: object
+) -> None:
+    catalog = _catalog(tmp_path)
+    catalog.create_exam(_exam(), actor_id="admin")
+
+    with pytest.raises(DomainValidationError):
+        catalog.set_official_passing_score(
+            "license-alpha", score=score, source=source, actor_id="admin"
+        )
+
+
+def test_official_passing_score_can_change_for_active_exam_but_not_retired(
+    tmp_path: Path,
+) -> None:
+    catalog = _catalog(tmp_path)
+    catalog.create_exam(_exam(), actor_id="admin")
+    with catalog.store.connect() as conn:
+        conn.execute(
+            "UPDATE exam_definitions SET status = 'active' WHERE id = ?", ("license-alpha",)
+        )
+
+    active = catalog.set_official_passing_score(
+        "license-alpha",
+        score=0,
+        source={"title": "Standard", "publisher": "Board"},
+        actor_id="admin",
+    )
+    assert active["official_passing_score"] == 0
+    assert active["revision"] == 2
+
+    with catalog.store.connect() as conn:
+        conn.execute(
+            "UPDATE exam_definitions SET status = 'retired' WHERE id = ?", ("license-alpha",)
+        )
+    with pytest.raises(InvalidTransitionError, match="retired"):
+        catalog.set_official_passing_score(
+            "license-alpha",
+            score=1,
+            source={"title": "Updated", "publisher": "Board"},
+            actor_id="admin",
+        )
+
+
+def _score_snapshot(*, official: int | None = 2, target: int | None = 1) -> dict[str, object]:
+    return {
+        "snapshot_schema_version": 2,
+        "id": "exam",
+        "title": "Exam",
+        "description": "",
+        "duration_seconds": 60,
+        "question_count": 3,
+        "blueprint": {},
+        "revision": 1,
+        "maximum_score": 3,
+        "official_passing_score": official,
+        "official_passing_score_source": (
+            {"title": "Standard", "publisher": "Board"} if official is not None else None
+        ),
+        "practice_target_score": target,
+        "practice_target_origin": "user" if target is not None else None,
+        "scoring_policy": {
+            "type": "unit_correct",
+            "version": 1,
+            "points_per_item": 1,
+        },
+    }
+
+
+def test_attempt_result_is_none_until_finalized_and_threshold_zero_is_evaluated() -> None:
+    assert (
+        evaluate_attempt_result(
+            mode="exam",
+            status="in_progress",
+            correct_count=None,
+            total_count=None,
+            content_invalidated_count=0,
+            exam_snapshot=_score_snapshot(official=0, target=0),
+        )
+        is None
+    )
+
+    result = evaluate_attempt_result(
+        mode="exam",
+        status="submitted",
+        correct_count=0,
+        total_count=3,
+        content_invalidated_count=0,
+        exam_snapshot=_score_snapshot(official=0, target=0),
+    )
+
+    assert result is not None
+    assert result["score"] == 0
+    assert result["maximum_score"] == 3
+    assert result["validity"] == "eligible"
+    assert result["official"]["status"] == "passed"
+    assert result["practice_target"]["status"] == "achieved"
+
+
+@pytest.mark.parametrize(
+    ("mode", "official_status", "target_status"),
+    [
+        ("exam", "passed", "achieved"),
+        ("practice", "not_evaluated", "achieved"),
+        ("review", "not_evaluated", "not_evaluated"),
+    ],
+)
+def test_attempt_result_respects_official_and_target_mode_boundaries(
+    mode: str, official_status: str, target_status: str
+) -> None:
+    result = evaluate_attempt_result(
+        mode=mode,
+        status="expired",
+        correct_count=2,
+        total_count=3,
+        content_invalidated_count=0,
+        exam_snapshot=_score_snapshot(),
+    )
+
+    assert result is not None
+    assert result["official"]["status"] == official_status
+    assert result["practice_target"]["status"] == target_status
+
+
+@pytest.mark.parametrize(
+    ("invalidated", "total", "reason"),
+    [(1, 2, "content_invalidated"), (0, 2, "incomplete_score_scope")],
+)
+def test_attempt_result_preserves_raw_score_but_withholds_invalid_judgements(
+    invalidated: int, total: int, reason: str
+) -> None:
+    result = evaluate_attempt_result(
+        mode="exam",
+        status="submitted",
+        correct_count=2,
+        total_count=total,
+        content_invalidated_count=invalidated,
+        exam_snapshot=_score_snapshot(),
+    )
+
+    assert result is not None
+    assert result["score"] == 2
+    assert result["maximum_score"] == 3
+    assert result["validity"] == ("content_invalidated" if invalidated else "eligible")
+    assert result["official"] == {
+        "status": "not_evaluated",
+        "threshold": 2,
+        "source": {"title": "Standard", "publisher": "Board"},
+        "not_evaluated_reason": reason,
+    }
+    assert result["practice_target"] == {
+        "status": "not_evaluated",
+        "threshold": 1,
+        "not_evaluated_reason": reason,
+    }
+
+
+def test_legacy_snapshot_is_never_guessed_as_an_official_standard() -> None:
+    result = evaluate_attempt_result(
+        mode="exam",
+        status="submitted",
+        correct_count=3,
+        total_count=3,
+        content_invalidated_count=0,
+        exam_snapshot={"question_count": 3, "pass_score": 2},
+    )
+
+    assert result is not None
+    assert result["score"] == 3
+    assert result["maximum_score"] == 3
+    assert result["official"] == {
+        "status": "not_evaluated",
+        "threshold": None,
+        "source": None,
+        "not_evaluated_reason": "legacy_score_ambiguous",
+    }
+    assert result["practice_target"] == {
+        "status": "achieved",
+        "threshold": 2,
+        "not_evaluated_reason": None,
+    }

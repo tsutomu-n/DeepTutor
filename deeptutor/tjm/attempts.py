@@ -10,7 +10,12 @@ import unicodedata
 import uuid
 
 from .catalog import CatalogService
-from .domain import DomainValidationError, InvalidTransitionError, grade_responses
+from .domain import (
+    DomainValidationError,
+    InvalidTransitionError,
+    evaluate_attempt_result,
+    grade_responses,
+)
 from .storage import LearningStore
 
 AttemptMode = Literal["practice", "exam", "review"]
@@ -103,6 +108,114 @@ class AttemptService:
         self.learning = learning
         self.owner_id = owner
         self.review_policy = review_policy or ReviewPolicy()
+
+    def list_exam_preferences(
+        self,
+        *,
+        exam_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return effective per-user targets without materializing legacy defaults."""
+        exams = self.catalog.list_exams()
+        if exam_ids is not None:
+            visible = {self._normalize_exam_id(exam_id) for exam_id in exam_ids}
+            exams = [exam for exam in exams if str(exam["id"]) in visible]
+        with self.learning.connect() as conn:
+            rows = {
+                str(row["exam_id"]): dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT exam_id, practice_target_score, origin, updated_at
+                    FROM exam_preferences
+                    """
+                ).fetchall()
+            }
+        preferences: list[dict[str, Any]] = []
+        for exam in exams:
+            exam_id = str(exam["id"])
+            stored = rows.get(exam_id)
+            if stored is not None:
+                preferences.append(
+                    {
+                        "exam_id": exam_id,
+                        "practice_target_score": stored["practice_target_score"],
+                        "origin": stored["origin"],
+                        "updated_at": stored["updated_at"],
+                    }
+                )
+                continue
+            legacy = self.catalog.get_legacy_practice_target(exam_id)
+            preferences.append(
+                {
+                    "exam_id": exam_id,
+                    "practice_target_score": legacy,
+                    "origin": "legacy_pass_score" if legacy is not None else None,
+                    "updated_at": None,
+                }
+            )
+        return preferences
+
+    def set_exam_preference(
+        self,
+        exam_id: str,
+        *,
+        practice_target_score: int | None,
+    ) -> dict[str, Any]:
+        canonical_exam_id = self._normalize_exam_id(exam_id)
+        try:
+            exam = self.catalog.get_exam(canonical_exam_id)
+        except DomainValidationError as exc:
+            raise DomainValidationError("exam is not available for preferences") from exc
+        if exam["status"] != "active":
+            raise DomainValidationError("exam is not available for preferences")
+        if isinstance(practice_target_score, bool) or (
+            practice_target_score is not None
+            and (
+                not isinstance(practice_target_score, int)
+                or not 0 <= practice_target_score <= int(exam["question_count"])
+            )
+        ):
+            raise DomainValidationError(
+                "practice_target_score must be between zero and question_count"
+            )
+        with self.learning.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            stored = conn.execute(
+                """
+                SELECT practice_target_score, origin, updated_at
+                FROM exam_preferences WHERE exam_id = ?
+                """,
+                (canonical_exam_id,),
+            ).fetchone()
+            if (
+                stored is not None
+                and stored["origin"] == "user"
+                and stored["practice_target_score"] == practice_target_score
+            ):
+                return {
+                    "exam_id": canonical_exam_id,
+                    "practice_target_score": stored["practice_target_score"],
+                    "origin": "user",
+                    "updated_at": stored["updated_at"],
+                }
+            now = _timestamp(_now_datetime())
+            conn.execute(
+                """
+                INSERT INTO exam_preferences (
+                    exam_id, practice_target_score, origin, created_at, updated_at
+                ) VALUES (?, ?, 'user', ?, ?)
+                ON CONFLICT(exam_id) DO UPDATE SET
+                    practice_target_score = excluded.practice_target_score,
+                    origin = 'user',
+                    updated_at = excluded.updated_at
+                """,
+                (canonical_exam_id, practice_target_score, now, now),
+            )
+        return {
+            "exam_id": canonical_exam_id,
+            "practice_target_score": practice_target_score,
+            "origin": "user",
+            "updated_at": now,
+        }
 
     def start_attempt(
         self, *, exam_id: str, mode: str, idempotency_key: str | None = None
@@ -202,15 +315,31 @@ class AttemptService:
             started + timedelta(seconds=int(exam["duration_seconds"])) if mode == "exam" else None
         )
         attempt_id = f"att_{uuid.uuid4().hex}"
+        preference = self._effective_practice_target(
+            conn,
+            exam_id=str(exam["id"]),
+            seed_legacy=True,
+            created_at=_timestamp(started),
+        )
         snapshot = {
+            "snapshot_schema_version": 2,
             "id": exam["id"],
             "title": exam["title"],
             "description": exam["description"],
             "duration_seconds": exam["duration_seconds"],
             "question_count": exam["question_count"],
-            "pass_score": exam["pass_score"],
             "blueprint": exam["blueprint"],
             "revision": exam["revision"],
+            "maximum_score": len(versions),
+            "official_passing_score": exam["official_passing_score"],
+            "official_passing_score_source": exam["official_passing_score_source"],
+            "practice_target_score": preference["practice_target_score"],
+            "practice_target_origin": preference["origin"],
+            "scoring_policy": {
+                "type": "unit_correct",
+                "version": 1,
+                "points_per_item": 1,
+            },
         }
         conn.execute(
             """
@@ -247,7 +376,7 @@ class AttemptService:
         limit: int = 20,
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
-        if not 1 <= limit <= 100:
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
             raise DomainValidationError("review limit must be between 1 and 100")
         canonical_exam_id = self._normalize_exam_id(exam_id)
         request_payload = {"exam_id": canonical_exam_id, "limit": limit}
@@ -360,6 +489,7 @@ class AttemptService:
             return self._attempt_view(conn, attempt_id)
 
     def present_item(self, attempt_id: str, *, position: int) -> dict[str, Any]:
+        position = self._validate_position(position)
         expired = False
         result: dict[str, Any] | None = None
         with self.learning.connect() as conn:
@@ -400,6 +530,13 @@ class AttemptService:
         client_created_at: str | None = None,
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
+        position = self._validate_position(position)
+        if not isinstance(selected_option_key, str):
+            raise DomainValidationError("selected choice must be a string")
+        if not isinstance(confirmed, bool):
+            raise DomainValidationError("confirmed must be a boolean")
+        if client_created_at is not None and not isinstance(client_created_at, str):
+            raise DomainValidationError("client_created_at must be a string")
         option_key = selected_option_key.strip()
         self._validate_metrics(confidence=confidence, elapsed_ms=elapsed_ms)
         if not option_key:
@@ -580,6 +717,7 @@ class AttemptService:
         elapsed_ms: int,
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
+        position = self._validate_position(position)
         self._validate_metrics(confidence=None, elapsed_ms=elapsed_ms)
         key = self._normalize_idempotency_key(idempotency_key)
         command_type = "use_hint"
@@ -676,7 +814,10 @@ class AttemptService:
         elapsed_ms: int,
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
+        position = self._validate_position(position)
         self._validate_metrics(confidence=None, elapsed_ms=elapsed_ms)
+        if not isinstance(transcript, str):
+            raise DomainValidationError("voice transcript must be a string")
         recognized = transcript.strip()
         if not recognized:
             raise DomainValidationError("voice transcript is required")
@@ -778,6 +919,8 @@ class AttemptService:
         elapsed_ms: int,
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
+        position = self._validate_position(position)
+        candidate_id = self._validate_candidate_id(candidate_id)
         self._validate_metrics(confidence=confidence, elapsed_ms=elapsed_ms)
         key = self._normalize_idempotency_key(idempotency_key)
         command_type = "confirm_voice_candidate"
@@ -900,6 +1043,8 @@ class AttemptService:
         candidate_id: int,
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
+        position = self._validate_position(position)
+        candidate_id = self._validate_candidate_id(candidate_id)
         key = self._normalize_idempotency_key(idempotency_key)
         command_type = "cancel_voice_candidate"
         target_id = f"{attempt_id}:{position}:{candidate_id}"
@@ -1221,7 +1366,19 @@ class AttemptService:
             item["catalog_disposition"] in {"invalid_content", "retired_unclassified"}
             for item in item_rows
         )
+        result["result"] = self._evaluate_attempt_response(result)
         return result
+
+    @staticmethod
+    def _evaluate_attempt_response(response: dict[str, Any]) -> dict[str, Any] | None:
+        return evaluate_attempt_result(
+            mode=str(response["mode"]),
+            status=str(response["status"]),
+            correct_count=response.get("correct_count"),
+            total_count=response.get("total_count"),
+            content_invalidated_count=int(response.get("content_invalidated_count", 0)),
+            exam_snapshot=response["exam_snapshot"],
+        )
 
     def _reconcile_catalog_state(
         self,
@@ -1481,7 +1638,11 @@ class AttemptService:
             if item["grading_status"] == "content_invalidated"
         }
         if not invalid_items:
-            return replay
+            if "result" in replay:
+                return replay
+            safe = dict(replay)
+            safe["result"] = self._evaluate_attempt_response(safe)
+            return safe
         safe = dict(replay)
         safe_items: list[dict[str, Any]] = []
         for stored_item in replay.get("items", []):
@@ -1497,7 +1658,53 @@ class AttemptService:
             safe_items.append(item)
         safe["items"] = safe_items
         safe["content_invalidated_count"] = len(invalid_items)
+        safe["result"] = self._evaluate_attempt_response(safe)
         return safe
+
+    def _effective_practice_target(
+        self,
+        conn,
+        *,
+        exam_id: str,
+        seed_legacy: bool,
+        created_at: str | None = None,
+    ) -> dict[str, Any]:
+        stored = conn.execute(
+            """
+            SELECT practice_target_score, origin, updated_at
+            FROM exam_preferences WHERE exam_id = ?
+            """,
+            (exam_id,),
+        ).fetchone()
+        if stored is not None:
+            return dict(stored)
+        legacy = self.catalog.get_legacy_practice_target(exam_id)
+        if legacy is None or not seed_legacy:
+            return {
+                "practice_target_score": legacy,
+                "origin": "legacy_pass_score" if legacy is not None else None,
+                "updated_at": None,
+            }
+        now = created_at or _timestamp(_now_datetime())
+        conn.execute(
+            """
+            INSERT INTO exam_preferences (
+                exam_id, practice_target_score, origin, created_at, updated_at
+            ) VALUES (?, ?, 'legacy_pass_score', ?, ?)
+            ON CONFLICT(exam_id) DO NOTHING
+            """,
+            (exam_id, legacy, now, now),
+        )
+        stored = conn.execute(
+            """
+            SELECT practice_target_score, origin, updated_at
+            FROM exam_preferences WHERE exam_id = ?
+            """,
+            (exam_id,),
+        ).fetchone()
+        if stored is None:
+            raise RuntimeError("legacy practice target seed did not produce a preference")
+        return dict(stored)
 
     def _safe_item_replay(
         self,
@@ -1604,6 +1811,18 @@ class AttemptService:
         if not exam_id:
             raise DomainValidationError("exam_id is required")
         return exam_id
+
+    @staticmethod
+    def _validate_position(value: int) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise DomainValidationError("position must be a non-negative integer")
+        return value
+
+    @staticmethod
+    def _validate_candidate_id(value: int) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise DomainValidationError("candidate_id must be a positive integer")
+        return value
 
     @staticmethod
     def _normalize_idempotency_key(value: str | None) -> str | None:

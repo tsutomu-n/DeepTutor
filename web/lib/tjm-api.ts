@@ -7,7 +7,10 @@ import {
   type TjmAttemptMode,
   type TjmExam,
   type TjmExamInput,
+  type TjmExamPreference,
+  type TjmExamPreferences,
   type TjmImportBatch,
+  type TjmOfficialPassingScoreInput,
   type TjmQuestionInput,
   type TjmQuestionStatus,
   type TjmQuestionVersion,
@@ -79,6 +82,30 @@ export function createTjmExam(input: TjmExamInput): Promise<TjmExam> {
 
 export function activateTjmExam(examId: string): Promise<TjmExam> {
   return requestJson(`/exams/${encodeURIComponent(examId)}/activate`, jsonInit('POST'))
+}
+
+export function updateTjmOfficialPassingScore(
+  examId: string,
+  input: TjmOfficialPassingScoreInput
+): Promise<TjmExam> {
+  return requestJson(
+    `/exams/${encodeURIComponent(examId)}/official-passing-score`,
+    jsonInit('PUT', input)
+  )
+}
+
+export function getTjmExamPreferences(): Promise<TjmExamPreferences> {
+  return requestJson('/exam-preferences')
+}
+
+export function updateTjmExamPreference(
+  examId: string,
+  practiceTargetScore: number | null
+): Promise<TjmExamPreference> {
+  return requestJson(
+    `/exam-preferences/${encodeURIComponent(examId)}`,
+    jsonInit('PUT', { practice_target_score: practiceTargetScore })
+  )
 }
 
 export function importTjmQuestions(

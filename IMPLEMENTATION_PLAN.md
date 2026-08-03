@@ -1,6 +1,6 @@
 # TJM 実装計画
 
-更新: 2026-08-03_15:33 (Asia/Tokyo)
+更新: 2026-08-03_17:03 (Asia/Tokyo)
 
 ## 1. 状態
 
@@ -81,9 +81,10 @@ DeepTutor の単一フォークに、試験固有の問題数、分野名、制�
 - `question_versions`: 本文、選択肢、正式正解、解説、ヒント、分野、状態、内容hash
 - `review_events`: draft/rejected/published/retiredの監査履歴
 - `import_batches`: 取り込み元、件数、行別エラー、実行者
-- `attempts`: practice/exam/review、開始・提出・集計・試験設定snapshot
+- `attempts`: practice/exam/review、開始・提出・集計、最大点・公式点と根拠資料・個人目標・採点方式を開始時に固定する試験設定snapshot
 - `attempt_items`: 出題順、固定された問題版、表示・回答時刻
 - `answer_events`: 選択、自信度、ヒント、音声候補、音声確認、変更履歴
+- `exam_preferences`: 利用者別の個人目標、由来、明示的な未設定状態
 - `review_queue`: 復習理由、優先度、次回予定、解消状態
 - `review_attempt_queue_links`: 復習attempt開始時に対象だったqueue行IDの不変snapshot
 
@@ -96,6 +97,8 @@ FastAPIへ `/api/v1/tjm` を追加する。通常利用APIは既存`require_auth
 主な契約は次のとおり。
 
 - 試験定義: `GET/POST/PATCH /exams`
+- 公式点と根拠資料: `PUT /exams/{exam_id}/official-passing-score`
+- 利用者別目標: `GET /exam-preferences`、`PUT /exam-preferences/{exam_id}`
 - 取り込み: `POST /imports`、`GET /imports/{id}`
 - 人間レビュー: `GET /review/questions`、`PATCH /review/questions/{version_id}`、`POST /review/questions/{version_id}/publish|reject|retire|classify-retirement`。手動retireは`reason=invalid_content`を必須とし、通常の`superseded`は置換版のpublish transactionだけが記録する。移行前から存在する理由不明のretired版だけは、人間が同一問題の後続版IDを指定した時に明示分類できる。
 - 演習・試験: `POST /attempts`、`GET /attempts/{id}`、`POST /attempts/{id}/answers`、`POST /attempts/{id}/submit`
@@ -113,6 +116,7 @@ Next.jsへ `/tjm` を追加し、次を単一の利用導線にまとめる。
 - 復習キュー、履歴、分野・自信度・時間・ヒント別分析
 - JSON/JSONL/CSV取り込みとadminレビュー
 - 問題読み上げと確認付き音声回答
+- 公式合否と個人目標達成を別々に表示し、公式点の根拠資料を参照可能にする。未設定・不整合・未知の契約は推測せず「未判定」とする。
 
 Webは正式正解をローカル判定せず、practiceの確定応答またはexam提出応答だけを表示する。
 
@@ -478,12 +482,20 @@ Webは正式正解をローカル判定せず、practiceの確定応答または
 | 認可・横断漏洩回帰 | `pytest -q tests/tjm tests/api/test_tjm_router.py` | 112 passed、211 warnings。利用者path失敗時のadmin DB非作成、auth無効互換、試験中の正解field非露出、旧exam直接GET・submit再送、履歴・分析・復習queue遮断、期限ちょうどの直接/並行確定、legacy migrationを含む |
 | 認可静的検査 | 対象`ruff check`、`git diff --check` | 成功 |
 | 認可独立レビュー | P0/P1再監査、期限競合と旧exam直接経路の追補 | 追補2件を修正後、未解決P0/P1なし。reviewer側では既存`CatalogStore`並行初期化のWAL lockを3回中1回観測したが、本作業側の同一test 10回は全成功。CP-14/最終gateで再発時はflakyとして放置せず停止・修復する |
-| Cookie更新のOrigin契約 | `require_authenticated_write_same_origin`、`require_admin_same_origin` | 認証有効かつCookieだけを使う全TJM mutation 19本で、raw header上の単一Originと具体的allowlistの完全一致を必須化。単一の認証済みBearerとauth無効構成は互換維持し、重複Origin、欠落、`null`、suffix/path/scheme違いを403にする |
+| Cookie更新のOrigin契約 | `require_authenticated_write_same_origin`、`require_admin_same_origin` | 認証有効かつCookieだけを使う全TJM mutation 21本で、raw header上の単一Originと具体的allowlistの完全一致を必須化。単一の認証済みBearerとauth無効構成は互換維持し、重複Origin、欠落、`null`、suffix/path/scheme違いを403にする |
 | credentialed CORS | `_build_cors_settings()`、実`CORSMiddleware` test | 認証有効時の設定値`*`/`null`を起動時の設定エラーにし、共有origin helperからも除外。Cookie付き未許可Originの通常要求にACAOを付けず、preflightを400にすることを実middlewareで確認 |
 | CORS設定保存 | `PUT /api/v1/settings/network` | 認証有効時は`*`/`null`を保存前に422で拒否し、backend/frontend portと既存allowlistを変更しない。禁止設定の遅延保存による次回起動不能を防止 |
 | Next proxy互換 | 実repoのNext dev server、Chrome、echo backendでJSON POST・bodyless POST・PATCH・multipart POST | frontend Origin、Cookie、body、methodがFastAPI側まで保持されることを確認。実測環境はNode 24/Chrome 150であり、Node 22 DockerとTLS reverse proxyはCP-14で再確認する |
-| CSRF/CORS回帰 | `pytest -q tests/tjm tests/api/test_tjm_router.py tests/api/test_cors_settings.py tests/api/test_settings_router.py tests/api/test_auth_contextvar.py tests/api/test_auth_logout_cookie.py` | 160 passed、215 warnings。管理者・学習者Cookie、Bearer、auth無効、全mutation route集合、実CORS middleware、設定保存拒否を含む。対象`ruff check`、`ruff format --check`、`git diff --check`も成功 |
+| CSRF/CORS回帰 | `pytest -q tests/tjm tests/api/test_tjm_router.py tests/api/test_cors_settings.py tests/api/test_settings_router.py tests/api/test_auth_contextvar.py tests/api/test_auth_logout_cookie.py` | 229 passed、215 warnings。管理者・学習者Cookie、Bearer、auth無効、全21 mutation route集合、実CORS middleware、設定保存拒否、採点・結果群を含む。対象`ruff check`、`ruff format --check`、`git diff --check`も成功 |
 | CSRF/CORS最終独立レビュー | 共通unsafe-origin判定、effective auth、保存前拒否、全mutation集合の再監査 | 未解決P0/P1と設定/API回帰なし。reviewer focused再実行11 passed |
+| 採点設定migration | Catalog v5、Learning v5 | 公式点と根拠資料を一体管理し、利用者別`exam_preferences`、不変snapshot schema v2、DB直接書込み用の検証・不変triggerを追加。不正なv4履歴はmigrationをversion 4のままrollbackし、推測修復しない |
+| 公式点と個人目標 | domain、SQLite、API | 公式点は検証可能な根拠資料と同時に設定し、未知なら推測しない。個人目標は利用者DBへ保存し、明示的`NULL`をtombstoneとして保持。legacy `pass_score`は公式値へ昇格せず、妥当な整数だけ個人目標候補にする |
+| attempt採点snapshot | `snapshot_schema_version=2` | 最大点、公式点・出典、個人目標・由来、`unit_correct`採点方式を開始時に固定する。後日の設定変更、問題廃止、再起動で過去のraw得点を改変しない |
+| 決定論的result契約 | `result.official`、`result.practice_target` | 公式合否と個人目標達成を分離。`official_score_unavailable`、`practice_target_unset`、`mode_not_eligible`、`content_invalidated`、`incomplete_score_scope`、`legacy_score_ambiguous`を明示し、AIを参照しない |
+| DB境界 | migration preflight、validator UDF、SQLite trigger | 不正出典JSON/URL、経路化不能exam ID、確定済みattemptの直接作成・identity/期限/score/snapshot/item/event改変、問題数不足、時刻矛盾を拒否。`recursive_triggers=ON`で`REPLACE`迂回も拒否 |
+| Web fail-closed | `normalizeAttemptForClient()` | 未知のmode/status/snapshot/scoring policy、snapshotと閾値・出典・目標の不一致、item全数・廃止状態・件数・正誤矛盾を肯定結果として表示しない。後日invalid化された正規履歴だけは境界内のraw得点を保持し、両結果を未判定にする |
+| 採点・結果回帰 | Python統合、Web node tests、TypeScript、対象ESLint、Ruff、差分検査 | Python 229 passed、215 warnings、Web 407 passed。型検査、対象lint、`ruff check`、`ruff format --check`、`git diff --check`成功 |
+| 採点・結果独立レビュー | storage監査、cross-layer再現、修正後のfocused再実行 | 未解決P0/P1なし。reviewer側でもPython 229 passed、Web 407 passed、Ruff、format、TypeScript、対象ESLint、差分検査を確認。未知runtime契約、snapshot/result drift、item/得点矛盾、確定後invalid化raw履歴をREDで修復 |
 
 ## 17. 既存リスクと今回の扱い
 
@@ -498,6 +510,9 @@ Webは正式正解をローカル判定せず、practiceの確定応答または
 - `CatalogStore`並行初期化testは独立review環境で3回中1回WAL lockを観測した一方、本作業環境の再実行10回は全成功で再現しなかった。今回差分が触れていないCatalog共通connection上の未確定flakyとして記録し、CP-14または最終全gateで再発した場合は既存失敗扱いで通過させない。
 - ローカルNode 24とCI/Docker Node 22が異なる。Docker buildをNode 22の正本とし、TJM Web検証でもNode 22経路を残す。
 - 実宅建問題データはリポジトリに存在しない。著作権・正確性を推測せず、取り込み・審査機能の完成後に人間が正当なデータを投入する。
+- 実宅建データに対応する公式合格点と根拠資料も同梱していないため、現時点の実データでは`official_score_unavailable`になる。これは汎用の採点機能欠陥ではなく、権利・正確性を確認した実データ受入れの外部待ちである。専用の年度fieldは未実装であり、「年度別合格点を実装済み」とは扱わない。
+- SQLite境界には採点・履歴の主要不変条件を実装したが、local DBへ直接SQLを書ける主体による空文字attempt ID作成は拒否していない。通常APIは`att_<uuid>`を生成し採点改変には直結しないためP2として残し、DBを悪意ある同一OS利用者から守る耐タンパー性は主張しない。
+- legacy整数`pass_score`の元の意味が公式点か利用者目標かは復元できない。正式出典なしに公式値へ昇格させず、利用者が変更・明示解除できる個人目標候補としてだけ遅延移行する判断を採った。この意味論を望まない運用では、利用者が目標を`NULL`へ設定すれば再出現しない。
 - TJM詳細画面の固定UI文言は現時点で英語を正本とし、global navigationだけ既存en/zh catalogへ追加した。機能境界とは分離しているが、日本語UIを配布要件にする場合はlocale追加が必要である。
 - sherpa ReazonSpeech int8 modelは約162MBでApache-2.0、実測対象CPUでは実時間未満だったが、modelファイル自体は同梱しない。管理者が正当な配布元から取得してpathを設定する。
 - `edge-tts`はMicrosoft Edgeのonline音声serviceを使い、packageはLGPLv3である。可用性・規約・network依存があるため、既存TTS providerを残し自動fallbackにしない。
@@ -530,7 +545,7 @@ Webは正式正解をローカル判定せず、practiceの確定応答または
 - 既存実データを保つ非破壊migrationを設計できず、backupと復旧経路を確保しても安全に進められない。
 - GitHub Actions設定変更、GHCR公開、本番配備、mainへのmerge、Ready化など、repository所有者の外部操作が必要になる。
 - API key、認証情報、秘密情報、高額または有償の外部APIが必要になる。
-- 権利確認済み宅建問題、正式出典、年度別合格点の根拠をユーザーから受け取る必要がある。
+- 実宅建データで公式合否を受入検証する段階で、権利確認済み問題、正式出典、対応する合格点の根拠をユーザーから受け取る必要がある。汎用の公式点・個人目標・決定論的結果機能の実装は、この提供待ちを停止理由にしない。
 - Pixel 9a等の対象実端末で、マイク、スピーカー、イヤホン、実browserを人間が操作する必要がある。
 - 目的、基盤、既存ユーザーデータの前提を変える重大な設計分岐が発生し、実コードから合理的に決められない。
 

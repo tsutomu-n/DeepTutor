@@ -39,6 +39,27 @@ test("TJM workspace exposes every required user and human-review surface", () =>
   );
 });
 
+test("TJM workspace separates official results from personal targets without exam-specific defaults", () => {
+  const workspace = source("components/tjm/TjmWorkspace.tsx");
+  for (const contract of [
+    "Official passing score",
+    "Practice target",
+    "Official result",
+    "Personal target result",
+    "Clear target",
+    "Scoring source",
+  ]) {
+    assert.match(workspace, new RegExp(contract));
+  }
+  assert.match(workspace, /getTjmResultDisplay/);
+  assert.match(workspace, /updateTjmExamPreference/);
+  assert.match(workspace, /updateTjmOfficialPassingScore/);
+  assert.doesNotMatch(workspace, /\bpass_score\b/);
+  assert.doesNotMatch(workspace, /takken/i);
+  assert.doesNotMatch(workspace, /durationMinutes:\s*["']120["']/);
+  assert.doesNotMatch(workspace, /questionCount:\s*["']50["']/);
+});
+
 test("TJM has a utility page and a first-class sidebar route", () => {
   assert.match(source("app/(utility)/tjm/page.tsx"), /TjmWorkspace/);
   const sidebar = source("components/sidebar/SidebarShell.tsx");

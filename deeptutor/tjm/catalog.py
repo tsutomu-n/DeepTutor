@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import sqlite3
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 import uuid
 
 from .domain import (
@@ -13,6 +13,7 @@ from .domain import (
     ExamSpec,
     ImmutableVersionError,
     InvalidTransitionError,
+    OfficialPassingScoreSource,
     QuestionVersionDraft,
 )
 from .storage import CatalogStore
@@ -60,29 +61,58 @@ class CatalogService:
         normalized = spec.normalized()
         actor = _require_actor(actor_id)
         now = _now()
+        official_source_json = (
+            _json(normalized.official_passing_score_source.as_dict())
+            if normalized.official_passing_score_source is not None
+            else None
+        )
         try:
             with self.store.connect() as conn:
-                conn.execute(
-                    """
-                    INSERT INTO exam_definitions (
-                        id, title, description, duration_seconds, question_count,
-                        pass_score, blueprint_json, status, revision, created_by,
-                        created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', 1, ?, ?, ?)
-                    """,
-                    (
-                        normalized.id,
-                        normalized.title,
-                        normalized.description,
-                        normalized.duration_seconds,
-                        normalized.question_count,
-                        normalized.pass_score,
-                        _json(dict(normalized.blueprint)),
-                        actor,
-                        now,
-                        now,
-                    ),
-                )
+                if normalized.official_passing_score is None:
+                    conn.execute(
+                        """
+                        INSERT INTO exam_definitions (
+                            id, title, description, duration_seconds, question_count,
+                            blueprint_json, status, revision, created_by,
+                            created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, 'draft', 1, ?, ?, ?)
+                        """,
+                        (
+                            normalized.id,
+                            normalized.title,
+                            normalized.description,
+                            normalized.duration_seconds,
+                            normalized.question_count,
+                            _json(dict(normalized.blueprint)),
+                            actor,
+                            now,
+                            now,
+                        ),
+                    )
+                else:
+                    conn.execute(
+                        """
+                        INSERT INTO exam_definitions (
+                            id, title, description, duration_seconds, question_count,
+                            blueprint_json, official_passing_score,
+                            official_passing_score_source_json, status, revision,
+                            created_by, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', 1, ?, ?, ?)
+                        """,
+                        (
+                            normalized.id,
+                            normalized.title,
+                            normalized.description,
+                            normalized.duration_seconds,
+                            normalized.question_count,
+                            _json(dict(normalized.blueprint)),
+                            normalized.official_passing_score,
+                            official_source_json,
+                            actor,
+                            now,
+                            now,
+                        ),
+                    )
         except sqlite3.IntegrityError as exc:
             raise DuplicateRecordError(f"exam already exists: {normalized.id}") from exc
         return self.get_exam(normalized.id)
@@ -95,8 +125,99 @@ class CatalogService:
         if row is None:
             raise DomainValidationError(f"unknown exam: {exam_id}")
         result = dict(row)
+        result.pop("pass_score", None)
         result["blueprint"] = json.loads(result.pop("blueprint_json"))
+        source_json = result.pop("official_passing_score_source_json", None)
+        result.setdefault("official_passing_score", None)
+        result["official_passing_score_source"] = (
+            OfficialPassingScoreSource.from_value(json.loads(source_json)).as_dict()
+            if source_json is not None
+            else None
+        )
         return result
+
+    def get_legacy_practice_target(self, exam_id: str) -> int | None:
+        """Read the retired pass_score column solely as a personal-target candidate."""
+        target_id = exam_id.strip()
+        with self.store.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT pass_score, typeof(pass_score) AS pass_score_type,
+                       question_count
+                FROM exam_definitions WHERE id = ?
+                """,
+                (target_id,),
+            ).fetchone()
+        if row is None:
+            raise DomainValidationError(f"unknown exam: {exam_id}")
+        score = row["pass_score"]
+        if score is None:
+            return None
+        if row["pass_score_type"] != "integer":
+            return None
+        candidate = int(score)
+        return candidate if 0 <= candidate <= int(row["question_count"]) else None
+
+    def set_official_passing_score(
+        self,
+        exam_id: str,
+        *,
+        score: int | None,
+        source: OfficialPassingScoreSource | Mapping[str, Any] | None,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        """Set evidence-backed official scoring for future attempt snapshots."""
+        _require_actor(actor_id)
+        target_id = exam_id.strip()
+        if isinstance(score, bool) or (score is not None and not isinstance(score, int)):
+            raise DomainValidationError("official passing score must be an integer")
+        if score is not None and score < 0:
+            raise DomainValidationError("official passing score cannot be negative")
+        if (score is None) != (source is None):
+            raise DomainValidationError("official passing score and source must be set together")
+        normalized_source = (
+            OfficialPassingScoreSource.from_value(source).as_dict() if source is not None else None
+        )
+        encoded_source = _json(normalized_source) if normalized_source is not None else None
+        now = _now()
+        with self.store.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                SELECT status, question_count, official_passing_score,
+                       official_passing_score_source_json
+                FROM exam_definitions WHERE id = ?
+                """,
+                (target_id,),
+            ).fetchone()
+            if row is None:
+                raise DomainValidationError(f"unknown exam: {exam_id}")
+            if row["status"] == "retired":
+                raise InvalidTransitionError(
+                    "retired exam official passing score cannot be changed"
+                )
+            if score is not None and score > int(row["question_count"]):
+                raise DomainValidationError(
+                    "official passing score must be between zero and question_count"
+                )
+            existing_source = (
+                json.loads(row["official_passing_score_source_json"])
+                if row["official_passing_score_source_json"] is not None
+                else None
+            )
+            if row["official_passing_score"] != score or existing_source != normalized_source:
+                conn.execute(
+                    """
+                    UPDATE exam_definitions SET
+                        official_passing_score = ?,
+                        official_passing_score_source_json = ?,
+                        revision = revision + 1,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (score, encoded_source, now, target_id),
+                )
+        return self.get_exam(target_id)
 
     def replace_exam(self, exam_id: str, spec: ExamSpec, *, actor_id: str) -> dict[str, Any]:
         normalized = spec.normalized()
@@ -108,7 +229,11 @@ class CatalogService:
         with self.store.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
-                "SELECT status FROM exam_definitions WHERE id = ?", (target_id,)
+                """
+                SELECT status, official_passing_score
+                FROM exam_definitions WHERE id = ?
+                """,
+                (target_id,),
             ).fetchone()
             if row is None:
                 raise DomainValidationError(f"unknown exam: {exam_id}")
@@ -118,7 +243,9 @@ class CatalogService:
                 """
                 UPDATE exam_definitions SET
                     title = ?, description = ?, duration_seconds = ?, question_count = ?,
-                    pass_score = ?, blueprint_json = ?, revision = revision + 1, updated_at = ?
+                    blueprint_json = ?, official_passing_score = ?,
+                    official_passing_score_source_json = ?,
+                    revision = revision + 1, updated_at = ?
                 WHERE id = ?
                 """,
                 (
@@ -126,8 +253,13 @@ class CatalogService:
                     normalized.description,
                     normalized.duration_seconds,
                     normalized.question_count,
-                    normalized.pass_score,
                     _json(dict(normalized.blueprint)),
+                    normalized.official_passing_score,
+                    (
+                        _json(normalized.official_passing_score_source.as_dict())
+                        if normalized.official_passing_score_source is not None
+                        else None
+                    ),
                     now,
                     target_id,
                 ),

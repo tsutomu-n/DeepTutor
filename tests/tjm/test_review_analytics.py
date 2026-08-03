@@ -67,12 +67,12 @@ def _seed_review_queue(attempts: AttemptService) -> dict:
 def test_review_queue_records_explainable_reasons_and_can_start_review(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    clock = {"now": datetime(2026, 1, 1, tzinfo=timezone.utc)}
+    monkeypatch.setattr(attempts_module, "_now_datetime", lambda: clock["now"])
     _, attempts, _ = _ready_services(tmp_path)
     attempt = attempts.start_attempt(exam_id="exam-review", mode="practice")
     items = attempt["items"]
     correct = {item["position"]: item for item in items}
-    clock = {"now": datetime(2026, 1, 1, tzinfo=timezone.utc)}
-    monkeypatch.setattr(attempts_module, "_now_datetime", lambda: clock["now"])
 
     # Wrong, high-confidence answer.
     attempts.present_item(attempt["id"], position=0)
@@ -155,7 +155,13 @@ def test_review_attempt_resolves_only_queue_rows_linked_at_start(tmp_path: Path)
         )
         late_row_id = int(cursor.lastrowid)
 
-    attempts.submit_attempt(review["id"], idempotency_key="review-submit-snapshot")
+    submitted = attempts.submit_attempt(review["id"], idempotency_key="review-submit-snapshot")
+
+    assert submitted["exam_snapshot"]["maximum_score"] == 1
+    assert submitted["result"]["score"] == 0
+    assert submitted["result"]["maximum_score"] == 1
+    assert submitted["result"]["official"]["status"] == "not_evaluated"
+    assert submitted["result"]["practice_target"]["status"] == "not_evaluated"
 
     with attempts.learning.connect() as conn:
         linked = conn.execute(
@@ -173,6 +179,36 @@ def test_review_attempt_resolves_only_queue_rows_linked_at_start(tmp_path: Path)
         assert all(row["resolution_reason"] == "review_completed" for row in linked)
         assert all(row["resolution_attempt_id"] == review["id"] for row in linked)
         assert dict(late) == {"status": "pending", "resolution_reason": None}
+
+
+def test_review_subset_does_not_compare_exam_thresholds_to_subset_maximum(
+    tmp_path: Path,
+) -> None:
+    catalog, attempts, _ = _ready_services(tmp_path)
+    catalog.set_official_passing_score(
+        "exam-review",
+        score=2,
+        source={"title": "Passing standard", "publisher": "Test board"},
+        actor_id="admin-1",
+    )
+    attempts.set_exam_preference("exam-review", practice_target_score=2)
+    _seed_review_queue(attempts)
+    review = attempts.start_review_attempt(exam_id="exam-review", limit=1)
+
+    submitted = attempts.submit_attempt(review["id"])
+
+    assert submitted["result"]["maximum_score"] == 1
+    assert submitted["result"]["official"] == {
+        "status": "not_evaluated",
+        "threshold": 2,
+        "source": {"title": "Passing standard", "publisher": "Test board"},
+        "not_evaluated_reason": "mode_not_eligible",
+    }
+    assert submitted["result"]["practice_target"] == {
+        "status": "not_evaluated",
+        "threshold": 2,
+        "not_evaluated_reason": "mode_not_eligible",
+    }
 
 
 def test_two_review_tabs_and_double_submit_do_not_corrupt_queue_resolution(
@@ -275,11 +311,11 @@ def test_queue_row_dismissed_during_review_is_not_recompleted(tmp_path: Path) ->
 def test_analytics_cover_area_confidence_time_hints_and_trend(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    clock = {"now": datetime(2026, 1, 1, tzinfo=timezone.utc)}
+    monkeypatch.setattr(attempts_module, "_now_datetime", lambda: clock["now"])
     catalog, attempts, version_ids = _ready_services(tmp_path)
     attempt = attempts.start_attempt(exam_id="exam-review", mode="practice")
     answers = [(0, "A", 90, 500), (1, "A", 40, 1000), (2, "B", 90, 3000)]
-    clock = {"now": datetime(2026, 1, 1, tzinfo=timezone.utc)}
-    monkeypatch.setattr(attempts_module, "_now_datetime", lambda: clock["now"])
     for position, option, confidence, elapsed in answers:
         clock["now"] += timedelta(seconds=10)
         attempts.present_item(attempt["id"], position=position)
@@ -520,6 +556,7 @@ def test_started_attempt_can_finish_superseded_version_without_mastery_transfer(
     assert old_item["grading_status"] == "eligible"
     assert old_item["is_correct"] is True
     assert submitted["total_count"] == 3
+    assert submitted["result"]["validity"] == "eligible"
     assert all(
         item["question_version_id"] != old_version_id for item in attempts.list_review_queue()
     )

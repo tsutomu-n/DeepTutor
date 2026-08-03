@@ -49,7 +49,8 @@ def _exam_payload() -> dict:
         "description": "No fixed exam constants.",
         "duration_seconds": 601,
         "question_count": 1,
-        "pass_score": 1,
+        "official_passing_score": None,
+        "official_passing_score_source": None,
         "blueprint": {"custom-area": 1},
     }
 
@@ -147,6 +148,175 @@ def test_admin_import_review_publish_and_retire_workflow(admin_client: TestClien
     assert retired.status_code == 200
     assert retired.json()["status"] == "retired"
     assert retired.json()["retirement_reason"] == "invalid_content"
+
+
+def test_exam_api_rejects_legacy_pass_score_field(admin_client: TestClient) -> None:
+    payload = _exam_payload()
+    payload["pass_score"] = 1
+
+    response = admin_client.post("/api/v1/tjm/exams", json=payload)
+
+    assert response.status_code == 422
+
+
+def test_exam_api_rejects_ids_that_cannot_roundtrip_through_path_routes(
+    admin_client: TestClient,
+) -> None:
+    response = admin_client.post(
+        "/api/v1/tjm/exams",
+        json={**_exam_payload(), "id": "exam/a"},
+    )
+
+    assert response.status_code == 400
+    assert "URL-safe ASCII path segment" in response.json()["detail"]
+    assert admin_client.get("/api/v1/tjm/exams").json()["exams"] == []
+
+
+def test_score_apis_reject_boolean_coercion_and_ambiguous_source(
+    admin_client: TestClient,
+) -> None:
+    source = {"title": "Standard", "publisher": "Test board"}
+
+    create_bool = admin_client.post(
+        "/api/v1/tjm/exams",
+        json={
+            **_exam_payload(),
+            "official_passing_score": True,
+            "official_passing_score_source": source,
+        },
+    )
+    put_bool = admin_client.put(
+        "/api/v1/tjm/exams/exam-api/official-passing-score",
+        json={
+            "official_passing_score": True,
+            "official_passing_score_source": source,
+        },
+    )
+    source_without_score = admin_client.put(
+        "/api/v1/tjm/exams/exam-api/official-passing-score",
+        json={
+            "official_passing_score": None,
+            "official_passing_score_source": source,
+        },
+    )
+    unsafe_source = admin_client.put(
+        "/api/v1/tjm/exams/exam-api/official-passing-score",
+        json={
+            "official_passing_score": 1,
+            "official_passing_score_source": {
+                "title": "Standard",
+                "publisher": "Test board",
+                "url": "javascript:alert(1)",
+            },
+        },
+    )
+    empty_official_update = admin_client.put(
+        "/api/v1/tjm/exams/exam-api/official-passing-score",
+        json={},
+    )
+
+    assert create_bool.status_code == 422
+    assert put_bool.status_code == 422
+    assert source_without_score.status_code == 422
+    assert unsafe_source.status_code == 422
+    assert empty_official_update.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"duration_seconds": True},
+        {"question_count": True},
+        {"blueprint": {"custom-area": True}},
+    ],
+)
+def test_exam_api_rejects_boolean_numeric_fields(
+    admin_client: TestClient,
+    override: dict,
+) -> None:
+    response = admin_client.post(
+        "/api/v1/tjm/exams",
+        json={**_exam_payload(), **override},
+    )
+
+    assert response.status_code == 422
+
+
+def test_admin_official_passing_score_route_preserves_source_contract(
+    admin_client: TestClient,
+    catalog: CatalogService,
+) -> None:
+    assert admin_client.post("/api/v1/tjm/exams", json=_exam_payload()).status_code == 201
+    source = {
+        "title": "Published examination standard",
+        "publisher": "Test authority",
+        "url": "https://example.test/standards/score",
+        "published_at": "2026-08-03",
+    }
+
+    response = admin_client.put(
+        "/api/v1/tjm/exams/exam-api/official-passing-score",
+        json={
+            "official_passing_score": 1,
+            "official_passing_score_source": source,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["official_passing_score"] == 1
+    assert response.json()["official_passing_score_source"] == source
+    assert response.json()["revision"] == 2
+
+    with catalog.store.connect() as conn:
+        conn.execute("UPDATE exam_definitions SET status = 'active' WHERE id = 'exam-api'")
+    active_update = admin_client.put(
+        "/api/v1/tjm/exams/exam-api/official-passing-score",
+        json={
+            "official_passing_score": 0,
+            "official_passing_score_source": {
+                "title": "Updated standard",
+                "publisher": "Test authority",
+            },
+        },
+    )
+    assert active_update.status_code == 200
+    assert active_update.json()["official_passing_score"] == 0
+
+    with catalog.store.connect() as conn:
+        conn.execute("UPDATE exam_definitions SET status = 'retired' WHERE id = 'exam-api'")
+    retired_update = admin_client.put(
+        "/api/v1/tjm/exams/exam-api/official-passing-score",
+        json={
+            "official_passing_score": 1,
+            "official_passing_score_source": source,
+        },
+    )
+    assert retired_update.status_code == 409
+
+
+def test_exam_request_persists_official_score_atomically_on_create_and_replace(
+    admin_client: TestClient,
+) -> None:
+    source = {"title": "Standard", "publisher": "Test authority"}
+    payload = {
+        **_exam_payload(),
+        "official_passing_score": 1,
+        "official_passing_score_source": source,
+    }
+
+    created = admin_client.post("/api/v1/tjm/exams", json=payload)
+    replaced = admin_client.patch(
+        "/api/v1/tjm/exams/exam-api",
+        json={**payload, "title": "Updated title"},
+    )
+
+    assert created.status_code == 201
+    assert created.json()["revision"] == 1
+    assert created.json()["official_passing_score"] == 1
+    assert created.json()["official_passing_score_source"] == source
+    assert replaced.status_code == 200
+    assert replaced.json()["revision"] == 2
+    assert replaced.json()["official_passing_score"] == 1
 
 
 def test_admin_legacy_retirement_classification_requires_explicit_replacement(
@@ -523,6 +693,61 @@ def test_practice_attempt_api_returns_immediate_deterministic_feedback(
     assert history.json()["attempts"][0]["id"] == attempt_id
 
 
+def test_exam_preference_api_distinguishes_explicit_null_from_missing_default(
+    learner_client: TestClient,
+) -> None:
+    initial = learner_client.get("/api/v1/tjm/exam-preferences")
+    assert initial.status_code == 200
+    assert initial.json() == {
+        "preferences": [
+            {
+                "exam_id": "exam-learn",
+                "practice_target_score": None,
+                "origin": None,
+                "updated_at": None,
+            }
+        ],
+        "total": 1,
+    }
+
+    configured = learner_client.put(
+        "/api/v1/tjm/exam-preferences/exam-learn",
+        json={"practice_target_score": 1},
+    )
+    assert configured.status_code == 200
+    assert configured.json()["practice_target_score"] == 1
+    assert configured.json()["origin"] == "user"
+    assert configured.json()["updated_at"]
+
+    cleared = learner_client.put(
+        "/api/v1/tjm/exam-preferences/exam-learn",
+        json={"practice_target_score": None},
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["practice_target_score"] is None
+    assert cleared.json()["origin"] == "user"
+    assert (
+        learner_client.get("/api/v1/tjm/exam-preferences").json()["preferences"][0]["origin"]
+        == "user"
+    )
+
+    too_high = learner_client.put(
+        "/api/v1/tjm/exam-preferences/exam-learn",
+        json={"practice_target_score": 2},
+    )
+    assert too_high.status_code == 400
+    boolean = learner_client.put(
+        "/api/v1/tjm/exam-preferences/exam-learn",
+        json={"practice_target_score": True},
+    )
+    assert boolean.status_code == 422
+    missing_field = learner_client.put(
+        "/api/v1/tjm/exam-preferences/exam-learn",
+        json={},
+    )
+    assert missing_field.status_code == 422
+
+
 def test_start_attempt_api_retry_does_not_create_a_second_attempt(
     learner_client: TestClient,
 ) -> None:
@@ -549,6 +774,7 @@ def test_exam_attempt_api_has_no_answer_leak_before_submit(learner_client: TestC
         "/api/v1/tjm/attempts", json={"exam_id": "exam-learn", "mode": "exam"}
     )
     assert started.status_code == 201
+    assert started.json()["result"] is None
     assert "correct_option_key" not in json.dumps(started.json())
     assert "official answer" not in json.dumps(started.json())
     attempt_id = started.json()["id"]
@@ -881,6 +1107,7 @@ def test_exact_tjm_admin_mutation_routes_use_same_origin_guard() -> None:
     assert admin_guarded == {
         ("POST", "/exams"),
         ("PATCH", "/exams/{exam_id}"),
+        ("PUT", "/exams/{exam_id}/official-passing-score"),
         ("POST", "/exams/{exam_id}/activate"),
         ("POST", "/imports"),
         ("PATCH", "/review/questions/{version_id}"),
@@ -897,6 +1124,7 @@ def test_exact_tjm_admin_mutation_routes_use_same_origin_guard() -> None:
         if any(dependency.call is learner_guard for dependency in route.dependant.dependencies)
     }
     assert learner_guarded == {
+        ("PUT", "/exam-preferences/{exam_id}"),
         ("POST", "/attempts"),
         ("POST", "/attempts/{attempt_id}/items/{position}/open"),
         ("POST", "/attempts/{attempt_id}/answers"),
@@ -994,6 +1222,63 @@ def test_elapsed_value_outside_sqlite_integer_range_is_a_400(
     )
 
     assert response.status_code == 400
+
+
+def test_attempt_api_rejects_boolean_metric_coercion(
+    learner_client: TestClient,
+) -> None:
+    started = learner_client.post(
+        "/api/v1/tjm/attempts", json={"exam_id": "exam-learn", "mode": "practice"}
+    ).json()
+    attempt_id = started["id"]
+    assert learner_client.post(f"/api/v1/tjm/attempts/{attempt_id}/items/0/open").status_code == 200
+
+    valid_answer = {
+        "position": 0,
+        "selected_option_key": "A",
+        "confidence": 50,
+        "elapsed_ms": 0,
+        "confirmed": True,
+    }
+    invalid_answers = [
+        learner_client.post(
+            f"/api/v1/tjm/attempts/{attempt_id}/answers",
+            json={**valid_answer, **override},
+        )
+        for override in (
+            {"position": False},
+            {"confidence": True},
+            {"elapsed_ms": False},
+            {"confirmed": 1},
+        )
+    ]
+    hint = learner_client.post(
+        f"/api/v1/tjm/attempts/{attempt_id}/items/0/hint",
+        json={"elapsed_ms": True},
+    )
+    voice = learner_client.post(
+        f"/api/v1/tjm/attempts/{attempt_id}/items/0/voice-candidate",
+        json={"transcript": "1番", "elapsed_ms": True},
+    )
+    valid_candidate = learner_client.post(
+        f"/api/v1/tjm/attempts/{attempt_id}/items/0/voice-candidate",
+        json={"transcript": "1番", "elapsed_ms": 1},
+    ).json()
+    voice_confirm = learner_client.post(
+        f"/api/v1/tjm/attempts/{attempt_id}/items/0/voice-candidates/"
+        f"{valid_candidate['candidate_id']}/confirm",
+        json={"confidence": False, "elapsed_ms": True},
+    )
+    review = learner_client.post(
+        "/api/v1/tjm/review/attempts",
+        json={"exam_id": "exam-learn", "limit": True},
+    )
+
+    assert all(answer.status_code == 422 for answer in invalid_answers)
+    assert hint.status_code == 422
+    assert voice.status_code == 422
+    assert voice_confirm.status_code == 422
+    assert review.status_code == 422
 
 
 def test_voice_answer_api_saves_only_after_candidate_confirmation(
@@ -1135,6 +1420,22 @@ def test_learner_exam_listing_excludes_inactive_definitions(
     )
 
     response = learner_client.get("/api/v1/tjm/exams")
+    preferences = learner_client.get("/api/v1/tjm/exam-preferences")
+    draft_preference = learner_client.put(
+        "/api/v1/tjm/exam-preferences/draft-hidden",
+        json={"practice_target_score": 1},
+    )
+    unknown_preference = learner_client.put(
+        "/api/v1/tjm/exam-preferences/not-present",
+        json={"practice_target_score": 1},
+    )
 
     assert response.status_code == 200
     assert [exam["id"] for exam in response.json()["exams"]] == ["exam-learn"]
+    assert [item["exam_id"] for item in preferences.json()["preferences"]] == ["exam-learn"]
+    assert draft_preference.status_code == unknown_preference.status_code == 400
+    assert (
+        draft_preference.json()
+        == unknown_preference.json()
+        == {"detail": "exam is not available for preferences"}
+    )

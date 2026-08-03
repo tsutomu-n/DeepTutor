@@ -49,6 +49,7 @@ import {
   createTjmExam,
   getTjmAnalytics,
   getTjmAttempt,
+  getTjmExamPreferences,
   getTjmHistory,
   getTjmReviewQueue,
   importTjmQuestions,
@@ -66,17 +67,25 @@ import {
   startTjmReviewAttempt,
   submitTjmAttempt,
   TjmApiError,
+  updateTjmExamPreference,
   updateTjmDraft,
+  updateTjmOfficialPassingScore,
 } from '@/lib/tjm-api'
 import { TjmCommandLedger } from '@/lib/tjm-command'
 import {
+  getTjmResultDisplay,
   hasGrade,
+  safeTjmSourceUrl,
   type TjmAnalytics,
   type TjmAttempt,
   type TjmAttemptMode,
   type TjmExam,
   type TjmExamInput,
+  type TjmExamPreference,
+  type TjmExamPreferences,
   type TjmImportBatch,
+  type TjmOfficialPassingScoreInput,
+  type TjmOfficialPassingScoreSource,
   type TjmQuestionInput,
   type TjmQuestionVersion,
   type TjmReviewQueueItem,
@@ -180,14 +189,196 @@ function EmptyPanel({
   )
 }
 
-function ExamCards({
-  exams,
+function ExamCard({
+  exam,
+  preference,
   busy,
   onStart,
+  onUpdateTarget,
 }: {
-  exams: TjmExam[]
+  exam: TjmExam
+  preference: TjmExamPreference | undefined
   busy: boolean
   onStart: (exam: TjmExam, mode: 'practice' | 'exam') => void
+  onUpdateTarget: (examId: string, target: number | null) => Promise<void>
+}) {
+  const [targetDraft, setTargetDraft] = useState(
+    preference?.practice_target_score === null || preference?.practice_target_score === undefined
+      ? ''
+      : String(preference.practice_target_score)
+  )
+  const [targetError, setTargetError] = useState<string | null>(null)
+
+  const saveTarget = async (target: number | null) => {
+    setTargetError(null)
+    try {
+      await onUpdateTarget(exam.id, target)
+    } catch (reason) {
+      setTargetError(messageOf(reason))
+    }
+  }
+
+  const submitTarget = async (event: FormEvent) => {
+    event.preventDefault()
+    if (targetDraft.trim() === '') {
+      setTargetError('Enter a whole-number target, or use Clear target.')
+      return
+    }
+    const target = Number(targetDraft)
+    if (!Number.isInteger(target) || target < 0 || target > exam.question_count) {
+      setTargetError(`Practice target must be a whole number from 0 to ${exam.question_count}.`)
+      return
+    }
+    await saveTarget(target)
+  }
+
+  const scoringUrl = safeTjmSourceUrl(exam.official_passing_score_source?.url)
+
+  return (
+    <article className={`${panelClass} overflow-hidden`}>
+      <div className="border-b border-[var(--border)] px-5 py-5">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <span className="rounded-full border border-[var(--border)] bg-[var(--secondary)] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
+            Rev. {exam.revision}
+          </span>
+          <span className="text-xs text-[var(--muted-foreground)]">{exam.id}</span>
+        </div>
+        <h2 className="font-serif text-xl font-semibold tracking-tight text-[var(--foreground)]">
+          {exam.title}
+        </h2>
+        <p className="mt-2 min-h-10 text-sm leading-5 text-[var(--muted-foreground)]">
+          {exam.description || 'A deterministic multiple-choice assessment.'}
+        </p>
+      </div>
+      <dl className="grid grid-cols-2 divide-x divide-y divide-[var(--border)] border-b border-[var(--border)] bg-[var(--secondary)]/45 sm:grid-cols-4 sm:divide-y-0">
+        <div className="px-4 py-3">
+          <dt className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">
+            Items
+          </dt>
+          <dd className="mt-1 font-mono text-sm font-semibold">{exam.question_count}</dd>
+        </div>
+        <div className="px-4 py-3">
+          <dt className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">
+            Time
+          </dt>
+          <dd className="mt-1 font-mono text-sm font-semibold">
+            {formatDuration(exam.duration_seconds)}
+          </dd>
+        </div>
+        <div className="px-4 py-3">
+          <dt className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">
+            Official passing score
+          </dt>
+          <dd className="mt-1 font-mono text-sm font-semibold">
+            {exam.official_passing_score ?? '—'}
+          </dd>
+        </div>
+        <div className="px-4 py-3">
+          <dt className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">
+            Practice target
+          </dt>
+          <dd className="mt-1 font-mono text-sm font-semibold">
+            {preference?.practice_target_score ?? '—'}
+          </dd>
+        </div>
+      </dl>
+      {exam.official_passing_score_source ? (
+        <p className="border-b border-[var(--border)] px-5 py-3 text-xs leading-5 text-[var(--muted-foreground)]">
+          Scoring source:{' '}
+          {scoringUrl ? (
+            <a
+              href={scoringUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline underline-offset-2 hover:text-[var(--foreground)]"
+            >
+              {exam.official_passing_score_source.title}
+            </a>
+          ) : (
+            exam.official_passing_score_source.title
+          )}{' '}
+          · {exam.official_passing_score_source.publisher}
+        </p>
+      ) : (
+        <p className="border-b border-[var(--border)] px-5 py-3 text-xs text-[var(--muted-foreground)]">
+          Scoring source: Not configured
+        </p>
+      )}
+      <form
+        onSubmit={event => void submitTarget(event)}
+        className="flex flex-wrap items-end gap-2 border-b border-[var(--border)] px-5 py-4"
+      >
+        <label className="grid min-w-40 flex-1 gap-1 text-xs font-medium">
+          Personal practice target
+          <input
+            type="number"
+            min={0}
+            max={exam.question_count}
+            step={1}
+            value={targetDraft}
+            disabled={busy}
+            onChange={event => setTargetDraft(event.target.value)}
+            placeholder={`0–${exam.question_count}`}
+            className={inputClass}
+          />
+        </label>
+        <Button type="submit" size="sm" variant="secondary" disabled={busy}>
+          Save target
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          disabled={
+            busy ||
+            preference?.practice_target_score === null ||
+            preference?.practice_target_score === undefined
+          }
+          onClick={() => void saveTarget(null)}
+        >
+          Clear target
+        </Button>
+        {targetError ? (
+          <p role="alert" className="w-full text-xs text-[var(--destructive)]">
+            {targetError}
+          </p>
+        ) : null}
+      </form>
+      <div className="flex flex-wrap gap-2 px-5 py-4">
+        <Button
+          type="button"
+          variant="secondary"
+          disabled={busy}
+          icon={<Sparkles size={15} />}
+          onClick={() => onStart(exam, 'practice')}
+        >
+          Practice
+        </Button>
+        <Button
+          type="button"
+          disabled={busy}
+          icon={<TimerReset size={15} />}
+          onClick={() => onStart(exam, 'exam')}
+        >
+          Timed exam
+        </Button>
+      </div>
+    </article>
+  )
+}
+
+function ExamCards({
+  exams,
+  preferences,
+  busy,
+  onStart,
+  onUpdateTarget,
+}: {
+  exams: TjmExam[]
+  preferences: TjmExamPreference[]
+  busy: boolean
+  onStart: (exam: TjmExam, mode: 'practice' | 'exam') => void
+  onUpdateTarget: (examId: string, target: number | null) => Promise<void>
 }) {
   if (!exams.length) {
     return (
@@ -197,66 +388,89 @@ function ExamCards({
       </EmptyPanel>
     )
   }
+  const preferenceByExam = new Map(preferences.map(preference => [preference.exam_id, preference]))
   return (
     <div className="grid gap-4 lg:grid-cols-2">
-      {exams.map(exam => (
-        <article key={exam.id} className={`${panelClass} overflow-hidden`}>
-          <div className="border-b border-[var(--border)] px-5 py-5">
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <span className="rounded-full border border-[var(--border)] bg-[var(--secondary)] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
-                Rev. {exam.revision}
-              </span>
-              <span className="text-xs text-[var(--muted-foreground)]">{exam.id}</span>
-            </div>
-            <h2 className="font-serif text-xl font-semibold tracking-tight text-[var(--foreground)]">
-              {exam.title}
-            </h2>
-            <p className="mt-2 min-h-10 text-sm leading-5 text-[var(--muted-foreground)]">
-              {exam.description || 'A deterministic multiple-choice assessment.'}
+      {exams.map(exam => {
+        const preference = preferenceByExam.get(exam.id)
+        return (
+          <ExamCard
+            key={`${exam.id}:${preference?.practice_target_score ?? 'none'}:${preference?.origin ?? 'none'}:${preference?.updated_at ?? 'never'}`}
+            exam={exam}
+            preference={preference}
+            busy={busy}
+            onStart={onStart}
+            onUpdateTarget={onUpdateTarget}
+          />
+        )
+      })}
+    </div>
+  )
+}
+
+function AttemptResultSummary({ attempt, compact = false }: { attempt: TjmAttempt; compact?: boolean }) {
+  const display = getTjmResultDisplay(attempt.result)
+  const scoringSource = attempt.result?.official.source ?? null
+  const scoringUrl = safeTjmSourceUrl(scoringSource?.url)
+  const dimensions = [
+    ['Official result', display.official],
+    ['Personal target result', display.practiceTarget],
+  ] as const
+
+  return (
+    <div className={compact ? 'grid gap-2' : 'grid gap-3 p-4'}>
+      {dimensions.map(([title, result]) => (
+        <div
+          key={title}
+          className={
+            compact
+              ? 'min-w-44 text-xs'
+              : 'rounded-xl border border-[var(--border)] bg-[var(--secondary)]/35 p-3'
+          }
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">
+              {title}
+            </span>
+            <span
+              className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                !result.evaluated
+                  ? 'bg-[var(--secondary)] text-[var(--muted-foreground)]'
+                  : result.positive
+                    ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+                    : 'bg-[var(--destructive)]/10 text-[var(--destructive)]'
+              }`}
+            >
+              {result.label}
+            </span>
+          </div>
+          <p className="mt-1 text-[11px] text-[var(--muted-foreground)]">
+            Threshold: {result.threshold ?? '—'}
+          </p>
+          {result.reason ? (
+            <p className="mt-1 text-[11px] leading-4 text-[var(--muted-foreground)]">
+              {result.reason}
             </p>
-          </div>
-          <dl className="grid grid-cols-3 divide-x divide-[var(--border)] border-b border-[var(--border)] bg-[var(--secondary)]/45">
-            <div className="px-4 py-3">
-              <dt className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">
-                Items
-              </dt>
-              <dd className="mt-1 font-mono text-sm font-semibold">{exam.question_count}</dd>
-            </div>
-            <div className="px-4 py-3">
-              <dt className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">
-                Time
-              </dt>
-              <dd className="mt-1 font-mono text-sm font-semibold">
-                {formatDuration(exam.duration_seconds)}
-              </dd>
-            </div>
-            <div className="px-4 py-3">
-              <dt className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">
-                Pass
-              </dt>
-              <dd className="mt-1 font-mono text-sm font-semibold">{exam.pass_score ?? '—'}</dd>
-            </div>
-          </dl>
-          <div className="flex flex-wrap gap-2 px-5 py-4">
-            <Button
-              type="button"
-              variant="secondary"
-              disabled={busy}
-              icon={<Sparkles size={15} />}
-              onClick={() => onStart(exam, 'practice')}
-            >
-              Practice
-            </Button>
-            <Button
-              type="button"
-              disabled={busy}
-              icon={<TimerReset size={15} />}
-              onClick={() => onStart(exam, 'exam')}
-            >
-              Timed exam
-            </Button>
-          </div>
-        </article>
+          ) : null}
+          {title === 'Official result' && scoringSource && !compact ? (
+            <p className="mt-1 text-[11px] leading-4 text-[var(--muted-foreground)]">
+              Scoring source:{' '}
+              {scoringUrl ? (
+                <a
+                  href={scoringUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline underline-offset-2 hover:text-[var(--foreground)]"
+                >
+                  {scoringSource.title}
+                </a>
+              ) : (
+                scoringSource.title
+              )}{' '}
+              · {scoringSource.publisher}
+            </p>
+          ) : null}
+        </div>
       ))}
     </div>
   )
@@ -305,6 +519,8 @@ function AttemptDesk({
   const commandLedger = commandLedgerRef.current
   const item = attempt.items[position]
   const finalized = attempt.status !== 'in_progress'
+  const resultInvalidated =
+    attempt.content_invalidated_count > 0 || attempt.result?.validity === 'content_invalidated'
   const itemScope = `${attempt.id}:${position}`
   const answerScope = `answer:${itemScope}`
   const itemEligible = item?.grading_status !== 'content_invalidated'
@@ -1055,7 +1271,7 @@ function AttemptDesk({
         {finalized ? (
           <div className="border-b border-[var(--border)] bg-[var(--foreground)] px-5 py-5 text-[var(--background)]">
             <p className="text-[10px] uppercase tracking-[0.16em] opacity-65">
-              {attempt.content_invalidated_count > 0 ? 'Historical raw score' : 'Final result'}
+              {resultInvalidated ? 'Historical raw score' : 'Final result'}
             </p>
             <p className="mt-2 font-serif text-3xl font-semibold tabular-nums">
               {attempt.correct_count ?? 0}
@@ -1063,15 +1279,16 @@ function AttemptDesk({
                 /{attempt.total_count ?? attempt.items.length}
               </span>
             </p>
-            {attempt.content_invalidated_count > 0 ? (
+            {resultInvalidated ? (
               <p className="mt-2 text-xs leading-5 opacity-75">
-                Content invalidated: {attempt.content_invalidated_count} question version
-                {attempt.content_invalidated_count === 1 ? '' : 's'} no longer counts as an official
-                learning result.
+                {attempt.content_invalidated_count > 0
+                  ? `Content invalidated: ${attempt.content_invalidated_count} question version${attempt.content_invalidated_count === 1 ? '' : 's'} no longer counts as an official learning result.`
+                  : 'Content invalidated: the result scope is no longer eligible for an official or personal target result.'}
               </p>
             ) : null}
           </div>
         ) : null}
+        {finalized ? <AttemptResultSummary attempt={attempt} /> : null}
         <div className="p-4">
           <p className="mb-3 text-[10px] font-semibold uppercase tracking-[0.15em] text-[var(--muted-foreground)]">
             Answer sheet
@@ -1255,17 +1472,21 @@ function ReviewPanel({
         ) : (
           <div className="divide-y divide-[var(--border)]">
             {history.slice(0, 8).map(attempt => (
-              <div key={attempt.id} className="flex items-center justify-between gap-4 px-5 py-3.5">
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium">{attempt.exam_snapshot.title}</p>
-                  <p className="mt-0.5 text-[11px] text-[var(--muted-foreground)]">
-                    {attempt.mode} · {new Date(attempt.started_at).toLocaleDateString()}
-                  </p>
+              <div key={attempt.id} className="grid gap-3 px-5 py-4">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium">{attempt.exam_snapshot.title}</p>
+                    <p className="mt-0.5 text-[11px] text-[var(--muted-foreground)]">
+                      {attempt.mode} · {new Date(attempt.started_at).toLocaleDateString()}
+                    </p>
+                  </div>
+                  <span className="font-mono text-sm font-semibold tabular-nums">
+                    {attempt.correct_count ?? '—'}/{attempt.total_count ?? attempt.items.length}
+                  </span>
                 </div>
-                <span className="font-mono text-sm font-semibold tabular-nums">
-                  {attempt.correct_count ?? '—'}/{attempt.total_count ?? attempt.items.length}
-                </span>
-                {attempt.content_invalidated_count > 0 ? (
+                <AttemptResultSummary attempt={attempt} compact />
+                {attempt.content_invalidated_count > 0 ||
+                attempt.result?.validity === 'content_invalidated' ? (
                   <span className="rounded-full bg-amber-500/10 px-2 py-1 text-[10px] font-semibold text-amber-700 dark:text-amber-300">
                     Content invalidated · raw score retained
                   </span>
@@ -1506,6 +1727,152 @@ function QuestionEditor({
   )
 }
 
+function OfficialPassingScoreEditor({
+  exam,
+  busy,
+  onSave,
+}: {
+  exam: TjmExam
+  busy: boolean
+  onSave: (input: TjmOfficialPassingScoreInput) => Promise<void>
+}) {
+  const [score, setScore] = useState(
+    exam.official_passing_score === null ? '' : String(exam.official_passing_score)
+  )
+  const [sourceTitle, setSourceTitle] = useState(exam.official_passing_score_source?.title ?? '')
+  const [publisher, setPublisher] = useState(
+    exam.official_passing_score_source?.publisher ?? ''
+  )
+  const [url, setUrl] = useState(exam.official_passing_score_source?.url ?? '')
+  const [publishedAt, setPublishedAt] = useState(
+    exam.official_passing_score_source?.published_at ?? ''
+  )
+  const [error, setError] = useState<string | null>(null)
+
+  const save = async (event: FormEvent) => {
+    event.preventDefault()
+    setError(null)
+    if (score.trim() === '') {
+      await onSave({
+        official_passing_score: null,
+        official_passing_score_source: null,
+      })
+      return
+    }
+
+    const threshold = Number(score)
+    if (!Number.isInteger(threshold) || threshold < 0 || threshold > exam.question_count) {
+      setError(`Official score must be a whole number from 0 to ${exam.question_count}.`)
+      return
+    }
+    if (!sourceTitle.trim() || !publisher.trim()) {
+      setError('Source title and publisher are required for an official passing score.')
+      return
+    }
+    const normalizedUrl = url.trim() ? safeTjmSourceUrl(url.trim()) : null
+    if (url.trim() && normalizedUrl === null) {
+      setError('Source URL must be an absolute HTTP or HTTPS URL.')
+      return
+    }
+
+    const source: TjmOfficialPassingScoreSource = {
+      title: sourceTitle.trim(),
+      publisher: publisher.trim(),
+      ...(normalizedUrl ? { url: normalizedUrl } : {}),
+      ...(publishedAt ? { published_at: publishedAt } : {}),
+    }
+    await onSave({
+      official_passing_score: threshold,
+      official_passing_score_source: source,
+    })
+  }
+
+  return (
+    <form
+      onSubmit={event => void save(event)}
+      className="mt-3 grid gap-2 rounded-xl border border-[var(--border)] bg-[var(--secondary)]/25 p-3 sm:grid-cols-2"
+    >
+      <label className="grid gap-1 text-[11px] font-medium">
+        Official passing score
+        <input
+          type="number"
+          min={0}
+          max={exam.question_count}
+          step={1}
+          value={score}
+          disabled={busy}
+          onChange={event => setScore(event.target.value)}
+          className={inputClass}
+          placeholder="Not configured"
+        />
+      </label>
+      <label className="grid gap-1 text-[11px] font-medium">
+        Scoring source title
+        <input
+          value={sourceTitle}
+          disabled={busy}
+          onChange={event => setSourceTitle(event.target.value)}
+          className={inputClass}
+        />
+      </label>
+      <label className="grid gap-1 text-[11px] font-medium">
+        Publisher
+        <input
+          value={publisher}
+          disabled={busy}
+          onChange={event => setPublisher(event.target.value)}
+          className={inputClass}
+        />
+      </label>
+      <label className="grid gap-1 text-[11px] font-medium">
+        Source URL (optional)
+        <input
+          type="url"
+          value={url}
+          disabled={busy}
+          onChange={event => setUrl(event.target.value)}
+          className={inputClass}
+          placeholder="https://…"
+        />
+      </label>
+      <label className="grid gap-1 text-[11px] font-medium">
+        Published date (optional)
+        <input
+          type="date"
+          value={publishedAt}
+          disabled={busy}
+          onChange={event => setPublishedAt(event.target.value)}
+          className={inputClass}
+        />
+      </label>
+      <div className="flex flex-wrap items-end gap-2">
+        <Button type="submit" size="sm" variant="secondary" disabled={busy}>
+          Save official score
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          disabled={busy || exam.official_passing_score === null}
+          onClick={() =>
+            void onSave({
+              official_passing_score: null,
+              official_passing_score_source: null,
+            })
+          }
+        >
+          Clear official score
+        </Button>
+      </div>
+      {error ? (
+        <p role="alert" className="text-xs text-[var(--destructive)] sm:col-span-2">
+          {error}
+        </p>
+      ) : null}
+    </form>
+  )
+}
+
 function AdminPanel({
   exams,
   questions,
@@ -1526,9 +1893,8 @@ function AdminPanel({
     id: '',
     title: '',
     description: '',
-    durationMinutes: '120',
-    questionCount: '50',
-    passScore: '',
+    durationMinutes: '',
+    questionCount: '',
     blueprint: '{}',
   })
 
@@ -1566,7 +1932,6 @@ function AdminPanel({
       description: examForm.description,
       duration_seconds: Number(examForm.durationMinutes) * 60,
       question_count: Number(examForm.questionCount),
-      pass_score: examForm.passScore ? Number(examForm.passScore) : null,
       blueprint,
     }
     await act(() => createTjmExam(input), 'Exam definition created as a draft.')
@@ -1611,7 +1976,7 @@ function AdminPanel({
                 required
                 value={examForm.id}
                 onChange={event => setExamForm({ ...examForm, id: event.target.value })}
-                placeholder="takken-2026"
+                placeholder="exam-2026"
                 className={inputClass}
               />
             </label>
@@ -1621,7 +1986,7 @@ function AdminPanel({
                 required
                 value={examForm.title}
                 onChange={event => setExamForm({ ...examForm, title: event.target.value })}
-                placeholder="宅地建物取引士"
+                placeholder="Professional certification exam"
                 className={inputClass}
               />
             </label>
@@ -1654,16 +2019,6 @@ function AdminPanel({
                 type="number"
                 value={examForm.questionCount}
                 onChange={event => setExamForm({ ...examForm, questionCount: event.target.value })}
-                className={inputClass}
-              />
-            </label>
-            <label className="grid gap-1 text-xs font-medium">
-              Pass score (optional)
-              <input
-                min={0}
-                type="number"
-                value={examForm.passScore}
-                onChange={event => setExamForm({ ...examForm, passScore: event.target.value })}
                 className={inputClass}
               />
             </label>
@@ -1761,36 +2116,56 @@ function AdminPanel({
         ) : (
           <div className="divide-y divide-[var(--border)]">
             {exams.map(exam => (
-              <div
-                key={exam.id}
-                className="flex flex-wrap items-center justify-between gap-3 px-5 py-3.5"
-              >
-                <div>
-                  <p className="text-sm font-medium">{exam.title}</p>
-                  <p className="text-[11px] text-[var(--muted-foreground)]">
-                    {exam.id} · {exam.question_count} questions ·{' '}
-                    {formatDuration(exam.duration_seconds)}
-                  </p>
+              <article key={exam.id} className="px-5 py-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium">{exam.title}</p>
+                    <p className="text-[11px] text-[var(--muted-foreground)]">
+                      {exam.id} · {exam.question_count} questions ·{' '}
+                      {formatDuration(exam.duration_seconds)} · Official passing score:{' '}
+                      {exam.official_passing_score ?? '—'}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="rounded-full bg-[var(--secondary)] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider">
+                      {exam.status}
+                    </span>
+                    {exam.status === 'draft' ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        loading={localBusy}
+                        onClick={() =>
+                          void act(() => activateTjmExam(exam.id), `${exam.title} is active.`)
+                        }
+                      >
+                        Activate
+                      </Button>
+                    ) : null}
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <span className="rounded-full bg-[var(--secondary)] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider">
-                    {exam.status}
-                  </span>
-                  {exam.status === 'draft' ? (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="secondary"
-                      loading={localBusy}
-                      onClick={() =>
-                        void act(() => activateTjmExam(exam.id), `${exam.title} is active.`)
-                      }
-                    >
-                      Activate
-                    </Button>
-                  ) : null}
-                </div>
-              </div>
+                {exam.status === 'draft' || exam.status === 'active' ? (
+                  <OfficialPassingScoreEditor
+                    key={[
+                      exam.id,
+                      exam.official_passing_score ?? 'none',
+                      exam.official_passing_score_source?.title ?? '',
+                      exam.official_passing_score_source?.publisher ?? '',
+                      exam.official_passing_score_source?.url ?? '',
+                      exam.official_passing_score_source?.published_at ?? '',
+                    ].join(':')}
+                    exam={exam}
+                    busy={localBusy || busy}
+                    onSave={input =>
+                      act(
+                        () => updateTjmOfficialPassingScore(exam.id, input),
+                        `${exam.title} official score settings were saved.`
+                      )
+                    }
+                  />
+                ) : null}
+              </article>
             ))}
           </div>
         )}
@@ -1961,6 +2336,10 @@ export default function TjmWorkspace() {
   const { t } = useTranslation()
   const [tab, setTab] = useState<WorkspaceTab>('learn')
   const [exams, setExams] = useState<TjmExam[]>([])
+  const [preferences, setPreferences] = useState<TjmExamPreferences>({
+    preferences: [],
+    total: 0,
+  })
   const [history, setHistory] = useState<TjmAttempt[]>([])
   const [queue, setQueue] = useState<TjmReviewQueueItem[]>([])
   const [analytics, setAnalytics] = useState<TjmAnalytics | null>(null)
@@ -1986,22 +2365,25 @@ export default function TjmWorkspace() {
       const auth = await fetchAuthStatus()
       const admin = Boolean(auth?.is_admin || auth?.enabled === false)
       setIsAdmin(admin)
-      const [nextExams, nextHistory, nextQueue, nextAnalytics, nextQuestions] = await Promise.all([
-        listTjmExams(),
-        getTjmHistory(),
-        getTjmReviewQueue(),
-        getTjmAnalytics(),
-        admin
-          ? Promise.all([
-              listTjmReviewQuestions('draft'),
-              listTjmReviewQuestions('published'),
-              listTjmReviewQuestions('retired'),
-            ]).then(([drafts, published, retired]) =>
-              selectAdminReviewQuestions(drafts, published, retired)
-            )
-          : Promise.resolve([]),
-      ])
+      const [nextExams, nextPreferences, nextHistory, nextQueue, nextAnalytics, nextQuestions] =
+        await Promise.all([
+          listTjmExams(),
+          getTjmExamPreferences(),
+          getTjmHistory(),
+          getTjmReviewQueue(),
+          getTjmAnalytics(),
+          admin
+            ? Promise.all([
+                listTjmReviewQuestions('draft'),
+                listTjmReviewQuestions('published'),
+                listTjmReviewQuestions('retired'),
+              ]).then(([drafts, published, retired]) =>
+                selectAdminReviewQuestions(drafts, published, retired)
+              )
+            : Promise.resolve([]),
+        ])
       setExams(nextExams)
+      setPreferences(nextPreferences)
       setHistory(nextHistory)
       setQueue(nextQueue)
       setAnalytics(nextAnalytics)
@@ -2068,6 +2450,26 @@ export default function TjmWorkspace() {
       setTab('learn')
     } catch (reason) {
       setError(messageOf(reason))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const savePracticeTarget = async (examId: string, target: number | null) => {
+    setBusy(true)
+    setError(null)
+    try {
+      const updated = await updateTjmExamPreference(examId, target)
+      setPreferences(current => {
+        const alreadyPresent = current.preferences.some(item => item.exam_id === examId)
+        return {
+          preferences: [
+            ...current.preferences.filter(item => item.exam_id !== examId),
+            updated,
+          ],
+          total: alreadyPresent ? current.total : current.total + 1,
+        }
+      })
     } finally {
       setBusy(false)
     }
@@ -2181,8 +2583,10 @@ export default function TjmWorkspace() {
         ) : tab === 'learn' ? (
           <ExamCards
             exams={activeExams}
+            preferences={preferences.preferences}
             busy={busy}
             onStart={(exam, mode) => void start(exam, mode)}
+            onUpdateTarget={savePracticeTarget}
           />
         ) : tab === 'review' ? (
           <ReviewPanel

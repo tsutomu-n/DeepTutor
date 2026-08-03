@@ -24,12 +24,25 @@ function leakedAttempt(status: TjmAttempt['status']): TjmAttempt {
     mode: 'exam',
     status,
     exam_snapshot: {
+      snapshot_schema_version: 2,
       id: 'exam-1',
       title: 'Exam',
       description: '',
       duration_seconds: 60,
       question_count: 1,
-      pass_score: 1,
+      maximum_score: 1,
+      official_passing_score: 1,
+      official_passing_score_source: {
+        title: 'Published scoring notice',
+        publisher: 'Exam authority',
+      },
+      practice_target_score: null,
+      practice_target_origin: null,
+      scoring_policy: {
+        type: 'unit_correct',
+        version: 1,
+        points_per_item: 1,
+      },
       blueprint: {},
       revision: 1,
     },
@@ -40,6 +53,28 @@ function leakedAttempt(status: TjmAttempt['status']): TjmAttempt {
     total_count: status === 'in_progress' ? null : 1,
     answered_count: 1,
     content_invalidated_count: 0,
+    result:
+      status === 'in_progress'
+        ? null
+        : {
+            score: 1,
+            maximum_score: 1,
+            validity: 'eligible',
+            official: {
+              status: 'passed',
+              threshold: 1,
+              source: {
+                title: 'Published scoring notice',
+                publisher: 'Exam authority',
+              },
+              not_evaluated_reason: null,
+            },
+            practice_target: {
+              status: 'not_evaluated',
+              threshold: null,
+              not_evaluated_reason: 'practice_target_unset',
+            },
+          },
     items: [
       {
         position: 0,
@@ -88,6 +123,146 @@ test('submitted exam normalization preserves server grading', () => {
     assert.equal(normalized.items[0].correct_option_key, 'B')
     assert.equal(normalized.items[0].is_correct, true)
   }
+})
+
+test('unknown attempt status fails closed instead of exposing exam grading', () => {
+  const attempt = leakedAttempt('submitted')
+  attempt.status = 'future_status' as TjmAttempt['status']
+
+  const normalized = normalizeAttemptForClient(attempt)
+  assert.equal(hasGrade(normalized.items[0]), false)
+  assert.equal(normalized.correct_count, null)
+  assert.equal(normalized.total_count, null)
+  assert.equal(normalized.result, null)
+})
+
+test('unknown attempt mode cannot expose grading or a positive personal result', () => {
+  const attempt = leakedAttempt('submitted')
+  attempt.mode = 'future_mode' as TjmAttempt['mode']
+  if (attempt.result === null) throw new Error('fixture must contain a result')
+  attempt.result = {
+    ...attempt.result,
+    official: {
+      status: 'not_evaluated',
+      threshold: null,
+      source: null,
+      not_evaluated_reason: 'official_score_unavailable',
+    },
+    practice_target: {
+      status: 'achieved',
+      threshold: 1,
+      not_evaluated_reason: null,
+    },
+  }
+
+  const normalized = normalizeAttemptForClient(attempt)
+  assert.equal(hasGrade(normalized.items[0]), false)
+  assert.equal(normalized.correct_count, null)
+  assert.equal(normalized.total_count, null)
+  assert.equal(normalized.result, null)
+})
+
+test('unknown snapshot schema cannot be interpreted as a legacy score contract', () => {
+  const attempt = leakedAttempt('submitted')
+  attempt.exam_snapshot = {
+    ...attempt.exam_snapshot,
+    snapshot_schema_version: 3 as TjmAttempt['exam_snapshot']['snapshot_schema_version'],
+    maximum_score: 99,
+  }
+
+  assert.equal(normalizeAttemptForClient(attempt).result, null)
+})
+
+test('submitted result requires the complete snapshotted item scope', () => {
+  const attempt = leakedAttempt('submitted')
+  attempt.items = []
+
+  assert.equal(normalizeAttemptForClient(attempt).result, null)
+})
+
+test('submitted result must match item disposition counts and item grading', () => {
+  const invalidated = leakedAttempt('submitted')
+  invalidated.items[0].catalog_disposition = 'invalid_content'
+  invalidated.items[0].grading_status = 'content_invalidated'
+  assert.equal(normalizeAttemptForClient(invalidated).result, null)
+
+  const incorrect = leakedAttempt('submitted')
+  incorrect.items[0].is_correct = false
+  assert.equal(normalizeAttemptForClient(incorrect).result, null)
+})
+
+test('post-finalization invalidation preserves bounded raw counts without a positive result', () => {
+  const attempt = leakedAttempt('submitted')
+  const item = attempt.items[0]
+  item.catalog_disposition = 'invalid_content'
+  item.grading_status = 'content_invalidated'
+  delete item.correct_option_key
+  delete item.explanation
+  delete item.is_correct
+  attempt.content_invalidated_count = 1
+  if (attempt.result === null) throw new Error('fixture must contain a result')
+  attempt.result = {
+    ...attempt.result,
+    validity: 'content_invalidated',
+    official: {
+      ...attempt.result.official,
+      status: 'not_evaluated',
+      not_evaluated_reason: 'content_invalidated',
+    },
+    practice_target: {
+      ...attempt.result.practice_target,
+      status: 'not_evaluated',
+      not_evaluated_reason: 'content_invalidated',
+    },
+  }
+
+  const normalized = normalizeAttemptForClient(attempt)
+  assert.equal(normalized.correct_count, 1)
+  assert.equal(normalized.total_count, 1)
+  assert.equal(normalized.result?.validity, 'content_invalidated')
+  assert.equal(normalized.result?.official.status, 'not_evaluated')
+})
+
+test('v2 result thresholds and source must match the immutable snapshot', () => {
+  const attempt = leakedAttempt('submitted')
+  attempt.exam_snapshot.practice_target_score = 1
+  attempt.exam_snapshot.practice_target_origin = 'user'
+  if (attempt.result === null) throw new Error('fixture must contain a result')
+  attempt.result = {
+    ...attempt.result,
+    official: {
+      status: 'passed',
+      threshold: 0,
+      source: {
+        title: 'Different notice',
+        publisher: 'Other publisher',
+      },
+      not_evaluated_reason: null,
+    },
+    practice_target: {
+      status: 'achieved',
+      threshold: 0,
+      not_evaluated_reason: null,
+    },
+  }
+
+  assert.equal(normalizeAttemptForClient(attempt).result, null)
+})
+
+test('submitted attempt normalization rejects positive results with incomplete facts', () => {
+  const attempt = leakedAttempt('submitted')
+  attempt.total_count = 0
+  assert.equal(normalizeAttemptForClient(attempt).result, null)
+})
+
+test('submitted attempt normalization rejects absent counts and invalidation mismatches', () => {
+  const absent = leakedAttempt('submitted')
+  absent.correct_count = null
+  assert.equal(normalizeAttemptForClient(absent).result, null)
+
+  const mismatched = leakedAttempt('submitted')
+  mismatched.content_invalidated_count = 1
+  assert.equal(normalizeAttemptForClient(mismatched).result, null)
 })
 
 test('TJM API client uses server grading and every required workflow route', () => {
@@ -157,7 +332,7 @@ test('TJM learning commands send keys to their exact routes and opening is expli
   }
 
   try {
-    await startTjmAttempt('exam/a', 'practice', 'start-key')
+    await startTjmAttempt('exam-a', 'practice', 'start-key')
     await openTjmAttemptItem('attempt/a', 3)
     await recordTjmAnswer(
       'attempt/a',
@@ -175,7 +350,7 @@ test('TJM learning commands send keys to their exact routes and opening is expli
     await confirmTjmVoiceCandidate('attempt/a', 3, 9, 60, 1_300, 'confirm-key')
     await cancelTjmVoiceCandidate('attempt/a', 3, 9, 'cancel-key')
     await submitTjmAttempt('attempt/a', 'submit-key')
-    await startTjmReviewAttempt('exam/a', 12, 'review-key')
+    await startTjmReviewAttempt('exam-a', 12, 'review-key')
   } finally {
     globalThis.fetch = originalFetch
   }

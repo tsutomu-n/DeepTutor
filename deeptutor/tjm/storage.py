@@ -2,12 +2,142 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import datetime, timedelta
+import json
 from pathlib import Path
 import sqlite3
+import time
+
+from .domain import (
+    DomainValidationError,
+    OfficialPassingScoreSource,
+    normalize_attempt_snapshot,
+    normalize_exam_id,
+)
 
 
 class UnsupportedSchemaVersion(RuntimeError):
     """Raised instead of opening a database created by newer TJM code."""
+
+
+def _enable_wal(conn: sqlite3.Connection) -> None:
+    """Set persistent WAL mode despite concurrent first-open races."""
+    deadline = time.monotonic() + 30
+    while True:
+        try:
+            conn.execute("PRAGMA journal_mode = WAL")
+            return
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower() or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.01)
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def _valid_official_source_json(value: object) -> int:
+    """Expose the domain validator to SQLite without propagating UDF errors."""
+    if not isinstance(value, str):
+        return 0
+    try:
+        decoded = json.loads(value, object_pairs_hook=_reject_duplicate_json_keys)
+        OfficialPassingScoreSource.from_value(decoded).normalized()
+    except (DomainValidationError, TypeError, ValueError):
+        return 0
+    return 1
+
+
+def _valid_exam_id(value: object) -> int:
+    try:
+        return int(isinstance(value, str) and normalize_exam_id(value) == value)
+    except DomainValidationError:
+        return 0
+
+
+def _valid_attempt_record(
+    snapshot_json: object,
+    exam_id: object,
+    mode: object,
+    status: object,
+    started_at: object,
+    deadline_at: object,
+    submitted_at: object,
+    allow_legacy: object,
+) -> int:
+    if (
+        not isinstance(snapshot_json, str)
+        or not isinstance(exam_id, str)
+        or not exam_id.strip()
+        or exam_id != exam_id.strip()
+        or _valid_exam_id(exam_id) != 1
+        or not isinstance(mode, str)
+        or not isinstance(status, str)
+        or not isinstance(started_at, str)
+        or not started_at.strip()
+    ):
+        return 0
+    try:
+        decoded = json.loads(snapshot_json, object_pairs_hook=_reject_duplicate_json_keys)
+        snapshot = normalize_attempt_snapshot(
+            decoded,
+            mode=mode,
+            allow_legacy=bool(allow_legacy),
+        )
+        started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+    except (DomainValidationError, TypeError, ValueError):
+        return 0
+    if started.tzinfo is None:
+        return 0
+    snapshot_exam_id = snapshot["exam_id"]
+    if snapshot_exam_id is not None and snapshot_exam_id != exam_id.strip():
+        return 0
+    submitted: datetime | None = None
+    if status == "in_progress":
+        if submitted_at is not None:
+            return 0
+    elif status in {"submitted", "expired"}:
+        if not isinstance(submitted_at, str) or not submitted_at.strip():
+            return 0
+        try:
+            submitted = datetime.fromisoformat(submitted_at.replace("Z", "+00:00"))
+        except ValueError:
+            return 0
+        if submitted.tzinfo is None or submitted < started:
+            return 0
+    else:
+        return 0
+    if mode != "exam":
+        return int(mode in {"practice", "review"} and deadline_at is None and status != "expired")
+    legacy = bool(snapshot["legacy"])
+    if deadline_at is None:
+        return int(legacy and status == "submitted")
+    if not isinstance(deadline_at, str) or not deadline_at.strip():
+        return 0
+    try:
+        deadline = datetime.fromisoformat(deadline_at.replace("Z", "+00:00"))
+    except ValueError:
+        return 0
+    if deadline.tzinfo is None or deadline <= started:
+        return 0
+    duration_seconds = snapshot["duration_seconds"]
+    if duration_seconds is not None and deadline - started != timedelta(
+        seconds=int(duration_seconds)
+    ):
+        return 0
+    if duration_seconds is None and not legacy:
+        return 0
+    if status == "submitted":
+        return int(submitted is not None and submitted < deadline)
+    if status == "expired":
+        return int(submitted == deadline)
+    return 1
 
 
 def _execute_migration(conn: sqlite3.Connection, sql: str) -> None:
@@ -37,9 +167,30 @@ class _SQLiteStore:
     def connect(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self.db_path, timeout=30)
         conn.row_factory = sqlite3.Row
+        conn.create_function(
+            "tjm_valid_exam_id",
+            1,
+            _valid_exam_id,
+            deterministic=True,
+        )
+        conn.create_function(
+            "tjm_valid_official_source_json",
+            1,
+            _valid_official_source_json,
+            deterministic=True,
+        )
+        conn.create_function(
+            "tjm_valid_attempt_record",
+            8,
+            _valid_attempt_record,
+            deterministic=True,
+        )
         conn.execute("PRAGMA foreign_keys = ON")
+        # SQLite otherwise lets INSERT OR REPLACE bypass BEFORE DELETE audit
+        # guards through its implicit delete step.
+        conn.execute("PRAGMA recursive_triggers = ON")
         conn.execute("PRAGMA busy_timeout = 5000")
-        conn.execute("PRAGMA journal_mode = WAL")
+        _enable_wal(conn)
         try:
             with conn:
                 yield conn
@@ -552,6 +703,227 @@ END;
 """
 
 
+_CATALOG_V5 = """
+CREATE TABLE catalog_v5_preflight (
+    valid INTEGER NOT NULL,
+    CONSTRAINT valid_catalog_v5_exam_ids CHECK (valid = 1)
+);
+
+INSERT INTO catalog_v5_preflight (valid)
+SELECT 0 FROM exam_definitions
+WHERE tjm_valid_exam_id(id) != 1
+LIMIT 1;
+
+DROP TABLE catalog_v5_preflight;
+
+ALTER TABLE exam_definitions ADD COLUMN official_passing_score INTEGER CHECK (
+    official_passing_score IS NULL OR (
+        typeof(official_passing_score) = 'integer' AND official_passing_score >= 0
+    )
+);
+ALTER TABLE exam_definitions ADD COLUMN official_passing_score_source_json TEXT;
+
+CREATE TRIGGER validate_exam_id_insert
+BEFORE INSERT ON exam_definitions
+WHEN tjm_valid_exam_id(NEW.id) != 1
+BEGIN
+    SELECT RAISE(ABORT, 'exam id must be one URL-safe ASCII path segment');
+END;
+
+CREATE TRIGGER prevent_exam_id_update
+BEFORE UPDATE OF id ON exam_definitions
+WHEN NEW.id IS NOT OLD.id
+BEGIN
+    SELECT RAISE(ABORT, 'exam id is immutable');
+END;
+
+CREATE TRIGGER validate_official_passing_score_insert
+BEFORE INSERT ON exam_definitions
+WHEN
+    (NEW.official_passing_score IS NULL) !=
+        (NEW.official_passing_score_source_json IS NULL) OR
+    NEW.official_passing_score > NEW.question_count OR
+    CASE
+        WHEN NEW.official_passing_score_source_json IS NULL THEN 0
+        WHEN NOT json_valid(NEW.official_passing_score_source_json) THEN 1
+        WHEN json_type(NEW.official_passing_score_source_json) != 'object' THEN 1
+        WHEN tjm_valid_official_source_json(
+            NEW.official_passing_score_source_json
+        ) != 1 THEN 1
+        WHEN json_type(NEW.official_passing_score_source_json, '$.title') != 'text' THEN 1
+        WHEN length(trim(json_extract(
+            NEW.official_passing_score_source_json, '$.title'
+        ))) = 0 THEN 1
+        WHEN json_type(NEW.official_passing_score_source_json, '$.publisher') != 'text' THEN 1
+        WHEN length(trim(json_extract(
+            NEW.official_passing_score_source_json, '$.publisher'
+        ))) = 0 THEN 1
+        WHEN json_type(NEW.official_passing_score_source_json, '$.url') IS NOT NULL
+             AND json_type(NEW.official_passing_score_source_json, '$.url') != 'text'
+            THEN 1
+        WHEN json_type(NEW.official_passing_score_source_json, '$.url') = 'text'
+             AND (
+                 length(trim(json_extract(
+                     NEW.official_passing_score_source_json, '$.url'
+                 ))) = 0 OR (
+                     lower(trim(json_extract(
+                         NEW.official_passing_score_source_json, '$.url'
+                     ))) NOT LIKE 'http://%' AND
+                     lower(trim(json_extract(
+                         NEW.official_passing_score_source_json, '$.url'
+                     ))) NOT LIKE 'https://%'
+                 ) OR lower(trim(json_extract(
+                     NEW.official_passing_score_source_json, '$.url'
+                 ))) IN ('http://', 'https://') OR (
+                     lower(trim(json_extract(
+                         NEW.official_passing_score_source_json, '$.url'
+                     ))) LIKE 'http://%' AND substr(trim(json_extract(
+                         NEW.official_passing_score_source_json, '$.url'
+                     )), 8, 1) IN ('/', '?', '#', '@')
+                 ) OR (
+                     lower(trim(json_extract(
+                         NEW.official_passing_score_source_json, '$.url'
+                     ))) LIKE 'https://%' AND substr(trim(json_extract(
+                         NEW.official_passing_score_source_json, '$.url'
+                     )), 9, 1) IN ('/', '?', '#', '@')
+                 ) OR instr(json_extract(
+                     NEW.official_passing_score_source_json, '$.url'
+                 ), ' ') > 0
+             ) THEN 1
+        WHEN json_type(
+            NEW.official_passing_score_source_json, '$.published_at'
+        ) IS NOT NULL AND json_type(
+            NEW.official_passing_score_source_json, '$.published_at'
+        ) != 'text' THEN 1
+        WHEN json_type(
+            NEW.official_passing_score_source_json, '$.published_at'
+        ) = 'text' AND length(trim(json_extract(
+            NEW.official_passing_score_source_json, '$.published_at'
+        ))) = 0 THEN 1
+        WHEN EXISTS (
+            SELECT 1 FROM json_each(NEW.official_passing_score_source_json)
+            WHERE key NOT IN ('title', 'publisher', 'url', 'published_at')
+        ) THEN 1
+        ELSE 0
+    END
+BEGIN
+    SELECT RAISE(ABORT, 'invalid official passing score');
+END;
+
+CREATE TRIGGER prevent_new_legacy_pass_score
+BEFORE INSERT ON exam_definitions
+WHEN NEW.pass_score IS NOT NULL
+BEGIN
+    SELECT RAISE(ABORT, 'legacy pass_score cannot be set');
+END;
+
+CREATE TRIGGER prevent_legacy_pass_score_update
+BEFORE UPDATE OF pass_score ON exam_definitions
+WHEN NEW.pass_score IS NOT OLD.pass_score
+BEGIN
+    SELECT RAISE(ABORT, 'legacy pass_score is immutable');
+END;
+
+CREATE TRIGGER validate_official_passing_score_update
+BEFORE UPDATE OF official_passing_score, official_passing_score_source_json,
+                 question_count ON exam_definitions
+WHEN
+    (NEW.official_passing_score IS NULL) !=
+        (NEW.official_passing_score_source_json IS NULL) OR
+    NEW.official_passing_score > NEW.question_count OR
+    CASE
+        WHEN NEW.official_passing_score_source_json IS NULL THEN 0
+        WHEN NOT json_valid(NEW.official_passing_score_source_json) THEN 1
+        WHEN json_type(NEW.official_passing_score_source_json) != 'object' THEN 1
+        WHEN tjm_valid_official_source_json(
+            NEW.official_passing_score_source_json
+        ) != 1 THEN 1
+        WHEN json_type(NEW.official_passing_score_source_json, '$.title') != 'text' THEN 1
+        WHEN length(trim(json_extract(
+            NEW.official_passing_score_source_json, '$.title'
+        ))) = 0 THEN 1
+        WHEN json_type(NEW.official_passing_score_source_json, '$.publisher') != 'text' THEN 1
+        WHEN length(trim(json_extract(
+            NEW.official_passing_score_source_json, '$.publisher'
+        ))) = 0 THEN 1
+        WHEN json_type(NEW.official_passing_score_source_json, '$.url') IS NOT NULL
+             AND json_type(NEW.official_passing_score_source_json, '$.url') != 'text'
+            THEN 1
+        WHEN json_type(NEW.official_passing_score_source_json, '$.url') = 'text'
+             AND (
+                 length(trim(json_extract(
+                     NEW.official_passing_score_source_json, '$.url'
+                 ))) = 0 OR (
+                     lower(trim(json_extract(
+                         NEW.official_passing_score_source_json, '$.url'
+                     ))) NOT LIKE 'http://%' AND
+                     lower(trim(json_extract(
+                         NEW.official_passing_score_source_json, '$.url'
+                     ))) NOT LIKE 'https://%'
+                 ) OR lower(trim(json_extract(
+                     NEW.official_passing_score_source_json, '$.url'
+                 ))) IN ('http://', 'https://') OR (
+                     lower(trim(json_extract(
+                         NEW.official_passing_score_source_json, '$.url'
+                     ))) LIKE 'http://%' AND substr(trim(json_extract(
+                         NEW.official_passing_score_source_json, '$.url'
+                     )), 8, 1) IN ('/', '?', '#', '@')
+                 ) OR (
+                     lower(trim(json_extract(
+                         NEW.official_passing_score_source_json, '$.url'
+                     ))) LIKE 'https://%' AND substr(trim(json_extract(
+                         NEW.official_passing_score_source_json, '$.url'
+                     )), 9, 1) IN ('/', '?', '#', '@')
+                 ) OR instr(json_extract(
+                     NEW.official_passing_score_source_json, '$.url'
+                 ), ' ') > 0
+             ) THEN 1
+        WHEN json_type(
+            NEW.official_passing_score_source_json, '$.published_at'
+        ) IS NOT NULL AND json_type(
+            NEW.official_passing_score_source_json, '$.published_at'
+        ) != 'text' THEN 1
+        WHEN json_type(
+            NEW.official_passing_score_source_json, '$.published_at'
+        ) = 'text' AND length(trim(json_extract(
+            NEW.official_passing_score_source_json, '$.published_at'
+        ))) = 0 THEN 1
+        WHEN EXISTS (
+            SELECT 1 FROM json_each(NEW.official_passing_score_source_json)
+            WHERE key NOT IN ('title', 'publisher', 'url', 'published_at')
+        ) THEN 1
+        ELSE 0
+    END
+BEGIN
+    SELECT RAISE(ABORT, 'invalid official passing score');
+END;
+
+CREATE TRIGGER prevent_retired_official_passing_score_update
+BEFORE UPDATE OF official_passing_score, official_passing_score_source_json
+ON exam_definitions
+WHEN (
+    NEW.official_passing_score IS NOT OLD.official_passing_score OR
+    NEW.official_passing_score_source_json IS NOT
+        OLD.official_passing_score_source_json
+) AND (OLD.status = 'retired' OR NEW.status = 'retired')
+BEGIN
+    SELECT RAISE(ABORT, 'retired exam official passing score is immutable');
+END;
+
+CREATE TRIGGER require_official_passing_score_revision
+BEFORE UPDATE OF official_passing_score, official_passing_score_source_json
+ON exam_definitions
+WHEN (
+    NEW.official_passing_score IS NOT OLD.official_passing_score OR
+    NEW.official_passing_score_source_json IS NOT
+        OLD.official_passing_score_source_json
+) AND NEW.revision != OLD.revision + 1
+BEGIN
+    SELECT RAISE(ABORT, 'official passing score update requires a new revision');
+END;
+"""
+
+
 _LEARNING_V1 = """
 CREATE TABLE attempts (
     id TEXT PRIMARY KEY,
@@ -884,16 +1256,296 @@ END;
 """
 
 
+_LEARNING_V5 = """
+CREATE TABLE learning_v5_preflight (
+    valid INTEGER NOT NULL,
+    CONSTRAINT valid_learning_v5_history CHECK (valid = 1)
+);
+
+INSERT INTO learning_v5_preflight (valid)
+SELECT 0 FROM attempts
+WHERE
+    tjm_valid_attempt_record(
+        exam_snapshot_json, exam_id, mode, status, started_at, deadline_at,
+        submitted_at, 1
+    ) != 1 OR
+    (
+        status = 'in_progress' AND (
+            submitted_at IS NOT NULL OR
+            correct_count IS NOT NULL OR
+            total_count IS NOT NULL
+        )
+    ) OR (
+        status IN ('submitted', 'expired') AND (
+            typeof(submitted_at) != 'text' OR
+            length(trim(submitted_at)) = 0 OR
+            typeof(correct_count) != 'integer' OR
+            typeof(total_count) != 'integer' OR
+            correct_count < 0 OR total_count < 0 OR
+            correct_count > total_count
+        )
+    ) OR CASE
+        WHEN status IN ('submitted', 'expired') AND
+             tjm_valid_attempt_record(
+                 exam_snapshot_json, exam_id, mode, status, started_at,
+                 deadline_at, submitted_at, 1
+             ) = 1
+        THEN (
+            (
+                SELECT COUNT(*) FROM attempt_items
+                WHERE attempt_id = attempts.id
+            ) != CASE
+                WHEN json_extract(
+                    exam_snapshot_json, '$.snapshot_schema_version'
+                ) = 2 THEN json_extract(
+                    exam_snapshot_json, '$.maximum_score'
+                )
+                ELSE json_extract(exam_snapshot_json, '$.question_count')
+            END OR
+            total_count > (
+                SELECT COUNT(*) FROM attempt_items
+                WHERE attempt_id = attempts.id
+            ) OR (
+                NOT EXISTS (
+                    SELECT 1 FROM attempt_items
+                    WHERE attempt_id = attempts.id
+                      AND catalog_disposition = 'unchecked'
+                ) AND total_count != (
+                    SELECT COUNT(*) FROM attempt_items
+                    WHERE attempt_id = attempts.id
+                      AND catalog_disposition IN ('current', 'superseded')
+                )
+            )
+        )
+        ELSE 0
+    END
+LIMIT 1;
+
+DROP TABLE learning_v5_preflight;
+
+CREATE TABLE exam_preferences (
+    exam_id TEXT PRIMARY KEY CHECK (
+        length(trim(exam_id)) > 0 AND tjm_valid_exam_id(exam_id) = 1
+    ),
+    practice_target_score INTEGER CHECK (
+        practice_target_score IS NULL OR (
+            typeof(practice_target_score) = 'integer' AND practice_target_score >= 0
+        )
+    ),
+    origin TEXT NOT NULL CHECK (origin IN ('user', 'legacy_pass_score')),
+    created_at TEXT NOT NULL CHECK (length(trim(created_at)) > 0),
+    updated_at TEXT NOT NULL CHECK (length(trim(updated_at)) > 0),
+    CHECK (origin != 'legacy_pass_score' OR practice_target_score IS NOT NULL)
+);
+
+CREATE TRIGGER prevent_exam_preference_identity_update
+BEFORE UPDATE ON exam_preferences
+WHEN NEW.exam_id IS NOT OLD.exam_id OR NEW.created_at IS NOT OLD.created_at
+BEGIN
+    SELECT RAISE(ABORT, 'exam preference identity is immutable');
+END;
+
+CREATE TRIGGER prevent_exam_preference_delete
+BEFORE DELETE ON exam_preferences
+BEGIN
+    SELECT RAISE(ABORT, 'exam preference cannot be deleted; clear the target explicitly');
+END;
+
+CREATE TRIGGER prevent_attempt_snapshot_update
+BEFORE UPDATE OF exam_snapshot_json ON attempts
+WHEN NEW.exam_snapshot_json IS NOT OLD.exam_snapshot_json
+BEGIN
+    SELECT RAISE(ABORT, 'attempt snapshot is immutable');
+END;
+
+CREATE TRIGGER prevent_finalized_attempt_score_update
+BEFORE UPDATE OF correct_count, total_count ON attempts
+WHEN OLD.status IN ('submitted', 'expired') AND (
+    NEW.correct_count IS NOT OLD.correct_count OR
+    NEW.total_count IS NOT OLD.total_count
+)
+BEGIN
+    SELECT RAISE(ABORT, 'attempt final score is immutable');
+END;
+
+CREATE TRIGGER prevent_finalized_attempt_reactivation
+BEFORE UPDATE OF status ON attempts
+WHEN OLD.status IN ('submitted', 'expired') AND NEW.status IS NOT OLD.status
+BEGIN
+    SELECT RAISE(ABORT, 'finalized attempt is immutable');
+END;
+
+CREATE TRIGGER validate_attempt_state_insert
+BEFORE INSERT ON attempts
+WHEN NEW.status != 'in_progress' OR
+    NEW.submitted_at IS NOT NULL OR
+    NEW.correct_count IS NOT NULL OR
+    NEW.total_count IS NOT NULL OR
+    tjm_valid_attempt_record(
+        NEW.exam_snapshot_json, NEW.exam_id, NEW.mode, NEW.status,
+        NEW.started_at, NEW.deadline_at, NEW.submitted_at, 0
+    ) != 1
+BEGIN
+    SELECT RAISE(ABORT, 'new attempt must be a valid in-progress attempt');
+END;
+
+CREATE TRIGGER validate_attempt_state_update
+BEFORE UPDATE ON attempts
+WHEN OLD.status = 'in_progress' AND (
+    (
+        NEW.status = 'in_progress' AND (
+            NEW.submitted_at IS NOT NULL OR
+            NEW.correct_count IS NOT NULL OR
+            NEW.total_count IS NOT NULL
+        )
+    ) OR (
+        NEW.status IN ('submitted', 'expired') AND (
+            tjm_valid_attempt_record(
+                NEW.exam_snapshot_json, NEW.exam_id, NEW.mode, NEW.status,
+                NEW.started_at, NEW.deadline_at, NEW.submitted_at, 1
+            ) != 1 OR
+            typeof(NEW.submitted_at) != 'text' OR
+            length(trim(NEW.submitted_at)) = 0 OR
+            typeof(NEW.correct_count) != 'integer' OR
+            typeof(NEW.total_count) != 'integer' OR
+            NEW.correct_count < 0 OR NEW.total_count < 0 OR
+            NEW.correct_count > NEW.total_count OR
+            NOT EXISTS (
+                SELECT 1 FROM attempt_items
+                WHERE attempt_id = NEW.id
+            ) OR
+            (
+                SELECT COUNT(*) FROM attempt_items
+                WHERE attempt_id = NEW.id
+            ) != CASE
+                WHEN json_extract(
+                    NEW.exam_snapshot_json, '$.snapshot_schema_version'
+                ) = 2 THEN json_extract(
+                    NEW.exam_snapshot_json, '$.maximum_score'
+                )
+                ELSE json_extract(NEW.exam_snapshot_json, '$.question_count')
+            END OR
+            NEW.total_count != (
+                SELECT COUNT(*) FROM attempt_items
+                WHERE attempt_id = NEW.id
+                  AND catalog_disposition IN ('current', 'superseded')
+            )
+        )
+    )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'invalid finalized attempt score');
+END;
+
+CREATE TRIGGER prevent_in_progress_attempt_identity_update
+BEFORE UPDATE ON attempts
+WHEN OLD.status = 'in_progress' AND (
+    NEW.id IS NOT OLD.id OR
+    NEW.exam_id IS NOT OLD.exam_id OR
+    NEW.mode IS NOT OLD.mode OR
+    NEW.started_at IS NOT OLD.started_at OR
+    NEW.deadline_at IS NOT OLD.deadline_at
+)
+BEGIN
+    SELECT RAISE(ABORT, 'attempt identity and schedule are immutable');
+END;
+
+CREATE TRIGGER prevent_finalized_attempt_identity_update
+BEFORE UPDATE ON attempts
+WHEN OLD.status IN ('submitted', 'expired') AND (
+    NEW.id IS NOT OLD.id OR
+    NEW.exam_id IS NOT OLD.exam_id OR
+    NEW.mode IS NOT OLD.mode OR
+    NEW.started_at IS NOT OLD.started_at OR
+    NEW.deadline_at IS NOT OLD.deadline_at OR
+    NEW.submitted_at IS NOT OLD.submitted_at
+)
+BEGIN
+    SELECT RAISE(ABORT, 'finalized attempt is immutable');
+END;
+
+CREATE TRIGGER prevent_attempt_delete
+BEFORE DELETE ON attempts
+BEGIN
+    SELECT RAISE(ABORT, 'attempt is immutable');
+END;
+
+CREATE TRIGGER prevent_duplicate_attempt_insert
+BEFORE INSERT ON attempts
+WHEN EXISTS (SELECT 1 FROM attempts WHERE id = NEW.id)
+BEGIN
+    SELECT RAISE(ABORT, 'attempt identity is immutable');
+END;
+
+CREATE TRIGGER prevent_finalized_attempt_item_insert
+BEFORE INSERT ON attempt_items
+WHEN EXISTS (
+    SELECT 1 FROM attempts
+    WHERE id = NEW.attempt_id AND status IN ('submitted', 'expired')
+)
+BEGIN
+    SELECT RAISE(ABORT, 'finalized attempt items are immutable');
+END;
+
+CREATE TRIGGER prevent_finalized_attempt_item_update
+BEFORE UPDATE ON attempt_items
+WHEN EXISTS (
+    SELECT 1 FROM attempts
+    WHERE id IN (OLD.attempt_id, NEW.attempt_id)
+      AND status IN ('submitted', 'expired')
+) AND (
+    NEW.attempt_id IS NOT OLD.attempt_id OR
+    NEW.position IS NOT OLD.position OR
+    NEW.question_version_id IS NOT OLD.question_version_id OR
+    NEW.area IS NOT OLD.area OR
+    NEW.opened_at IS NOT OLD.opened_at OR
+    NEW.answered_at IS NOT OLD.answered_at OR
+    NEW.confirmed_option_key IS NOT OLD.confirmed_option_key OR
+    NEW.confidence IS NOT OLD.confidence OR
+    NEW.elapsed_ms IS NOT OLD.elapsed_ms OR
+    NEW.hint_count IS NOT OLD.hint_count OR
+    NEW.first_presented_at IS NOT OLD.first_presented_at OR
+    NEW.first_answered_at IS NOT OLD.first_answered_at OR
+    NEW.final_answered_at IS NOT OLD.final_answered_at OR
+    NEW.server_elapsed_ms IS NOT OLD.server_elapsed_ms OR
+    NEW.client_active_elapsed_ms IS NOT OLD.client_active_elapsed_ms
+)
+BEGIN
+    SELECT RAISE(ABORT, 'finalized attempt items are immutable');
+END;
+
+CREATE TRIGGER prevent_finalized_attempt_item_delete
+BEFORE DELETE ON attempt_items
+WHEN EXISTS (
+    SELECT 1 FROM attempts
+    WHERE id = OLD.attempt_id AND status IN ('submitted', 'expired')
+)
+BEGIN
+    SELECT RAISE(ABORT, 'finalized attempt items are immutable');
+END;
+
+CREATE TRIGGER prevent_finalized_answer_event_insert
+BEFORE INSERT ON answer_events
+WHEN EXISTS (
+    SELECT 1 FROM attempts
+    WHERE id = NEW.attempt_id AND status IN ('submitted', 'expired')
+)
+BEGIN
+    SELECT RAISE(ABORT, 'finalized attempt answer history is immutable');
+END;
+"""
+
+
 class CatalogStore(_SQLiteStore):
     """Authoritative deployment-wide exam and immutable question catalog."""
 
-    migrations = (_CATALOG_V1, _CATALOG_V2, _CATALOG_V3, _CATALOG_V4)
+    migrations = (_CATALOG_V1, _CATALOG_V2, _CATALOG_V3, _CATALOG_V4, _CATALOG_V5)
 
 
 class LearningStore(_SQLiteStore):
     """Request-owner-scoped attempts and append-only answer history."""
 
-    migrations = (_LEARNING_V1, _LEARNING_V2, _LEARNING_V3, _LEARNING_V4)
+    migrations = (_LEARNING_V1, _LEARNING_V2, _LEARNING_V3, _LEARNING_V4, _LEARNING_V5)
 
 
 __all__ = ["CatalogStore", "LearningStore", "UnsupportedSchemaVersion"]

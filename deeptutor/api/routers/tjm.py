@@ -6,7 +6,7 @@ from typing import Any, Literal, Never
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, UploadFile, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 
 from deeptutor.api.routers.auth import (
     require_admin,
@@ -26,6 +26,7 @@ from deeptutor.tjm.domain import (
     ExamSpec,
     ImmutableVersionError,
     InvalidTransitionError,
+    OfficialPassingScoreSource,
     QuestionVersionDraft,
 )
 from deeptutor.tjm.importer import ImportService
@@ -44,13 +45,39 @@ class ExamRequest(_StrictModel):
     id: str = Field(min_length=1, max_length=200)
     title: str = Field(min_length=1, max_length=300)
     description: str = ""
-    duration_seconds: int = Field(gt=0)
-    question_count: int = Field(gt=0)
-    pass_score: int | None = Field(default=None, ge=0)
-    blueprint: dict[str, int] = Field(default_factory=dict)
+    duration_seconds: int = Field(gt=0, strict=True)
+    question_count: int = Field(gt=0, strict=True)
+    official_passing_score: int | None = Field(default=None, ge=0, strict=True)
+    official_passing_score_source: dict[str, Any] | None = None
+    blueprint: dict[str, StrictInt] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_official_passing_score(self) -> "ExamRequest":
+        if (self.official_passing_score is None) != (self.official_passing_score_source is None):
+            raise ValueError("official passing score and source must be set together")
+        if (
+            self.official_passing_score is not None
+            and self.official_passing_score > self.question_count
+        ):
+            raise ValueError("official passing score must be between zero and question_count")
+        if self.official_passing_score_source is not None:
+            try:
+                OfficialPassingScoreSource.from_value(self.official_passing_score_source)
+            except DomainValidationError as exc:
+                raise ValueError(str(exc)) from exc
+        return self
 
     def to_domain(self) -> ExamSpec:
-        return ExamSpec(**self.model_dump())
+        return ExamSpec(
+            id=self.id,
+            title=self.title,
+            description=self.description,
+            duration_seconds=self.duration_seconds,
+            question_count=self.question_count,
+            blueprint=self.blueprint,
+            official_passing_score=self.official_passing_score,
+            official_passing_score_source=self.official_passing_score_source,
+        )
 
 
 class ChoiceRequest(_StrictModel):
@@ -104,31 +131,51 @@ class StartAttemptRequest(_StrictModel):
 
 
 class AnswerRequest(_StrictModel):
-    position: int = Field(ge=0)
+    position: int = Field(ge=0, strict=True)
     selected_option_key: str = Field(min_length=1, max_length=100)
-    confidence: int | None = Field(default=None, ge=0, le=100)
-    elapsed_ms: int = Field(ge=0)
-    confirmed: bool = False
+    confidence: int | None = Field(default=None, ge=0, le=100, strict=True)
+    elapsed_ms: int = Field(ge=0, strict=True)
+    confirmed: bool = Field(default=False, strict=True)
     client_created_at: str | None = None
 
 
 class HintRequest(_StrictModel):
-    elapsed_ms: int = Field(ge=0)
+    elapsed_ms: int = Field(ge=0, strict=True)
 
 
 class VoiceCandidateRequest(_StrictModel):
     transcript: str = Field(min_length=1, max_length=2000)
-    elapsed_ms: int = Field(ge=0)
+    elapsed_ms: int = Field(ge=0, strict=True)
 
 
 class VoiceConfirmRequest(_StrictModel):
-    confidence: int | None = Field(default=None, ge=0, le=100)
-    elapsed_ms: int = Field(ge=0)
+    confidence: int | None = Field(default=None, ge=0, le=100, strict=True)
+    elapsed_ms: int = Field(ge=0, strict=True)
 
 
 class ReviewAttemptRequest(_StrictModel):
     exam_id: str = Field(min_length=1, max_length=200)
-    limit: int = Field(default=20, ge=1, le=100)
+    limit: int = Field(default=20, ge=1, le=100, strict=True)
+
+
+class OfficialPassingScoreRequest(_StrictModel):
+    official_passing_score: int | None = Field(ge=0, strict=True)
+    official_passing_score_source: dict[str, Any] | None
+
+    @model_validator(mode="after")
+    def validate_source_pair(self) -> "OfficialPassingScoreRequest":
+        if (self.official_passing_score is None) != (self.official_passing_score_source is None):
+            raise ValueError("official passing score and source must be set together")
+        if self.official_passing_score_source is not None:
+            try:
+                OfficialPassingScoreSource.from_value(self.official_passing_score_source)
+            except DomainValidationError as exc:
+                raise ValueError(str(exc)) from exc
+        return self
+
+
+class ExamPreferenceRequest(_StrictModel):
+    practice_target_score: int | None = Field(ge=0, strict=True)
 
 
 def get_catalog_service() -> CatalogService:
@@ -209,6 +256,24 @@ def replace_exam(
 ) -> dict[str, Any]:
     try:
         return catalog.replace_exam(exam_id, request.to_domain(), actor_id=_actor(admin))
+    except (DomainValidationError, InvalidTransitionError) as exc:
+        _raise_http(exc)
+
+
+@router.put("/exams/{exam_id}/official-passing-score")
+def set_official_passing_score(
+    exam_id: str,
+    request: OfficialPassingScoreRequest,
+    admin: TokenPayload = Depends(require_admin_same_origin),
+    catalog: CatalogService = Depends(get_catalog_service),
+) -> dict[str, Any]:
+    try:
+        return catalog.set_official_passing_score(
+            exam_id,
+            score=request.official_passing_score,
+            source=request.official_passing_score_source,
+            actor_id=_actor(admin),
+        )
     except (DomainValidationError, InvalidTransitionError) as exc:
         _raise_http(exc)
 
@@ -379,6 +444,35 @@ def start_attempt(
             exam_id=request.exam_id,
             mode=request.mode,
             idempotency_key=idempotency_key,
+        )
+    except (DomainValidationError, InvalidTransitionError) as exc:
+        _raise_http(exc)
+
+
+@router.get("/exam-preferences")
+def get_exam_preferences(
+    payload: TokenPayload | None = Depends(require_auth),
+    catalog: CatalogService = Depends(get_catalog_service),
+    attempts: AttemptService = Depends(get_attempt_service),
+) -> dict[str, Any]:
+    exams = catalog.list_exams(
+        status=None if payload is None or payload.role == "admin" else "active"
+    )
+    preferences = attempts.list_exam_preferences(exam_ids=[str(exam["id"]) for exam in exams])
+    return {"preferences": preferences, "total": len(preferences)}
+
+
+@router.put("/exam-preferences/{exam_id}")
+def set_exam_preference(
+    exam_id: str,
+    request: ExamPreferenceRequest,
+    _: TokenPayload | None = Depends(require_authenticated_write_same_origin),
+    attempts: AttemptService = Depends(get_attempt_service),
+) -> dict[str, Any]:
+    try:
+        return attempts.set_exam_preference(
+            exam_id,
+            practice_target_score=request.practice_target_score,
         )
     except (DomainValidationError, InvalidTransitionError) as exc:
         _raise_http(exc)
