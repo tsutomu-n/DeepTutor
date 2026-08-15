@@ -1,11 +1,11 @@
 # TJM 実装計画
 
-更新: 2026-08-03_17:05 (Asia/Tokyo)
+更新: 2026-08-15_11:23 (Asia/Tokyo)
 
 ## 1. 状態
 
-- 計画状態: 未完了（追加監査により完成判定を撤回し、修復中）
-- 現在のチェックポイント: CP-13 中核整合性の修復（進行中）
+- 計画状態: 未完了（中核とローカル受入は完了、remote CIと外部受入を継続中）
+- 現在のチェックポイント: CP-14 配布と永続化（remote CI確認中）
 - 作業ブランチ: `tjm/implementation`
 - 基準: DeepTutor v1.5.8 / `44fa7a1552b88f9d8ce2c22259128a15ae2eb0c8`
 - リポジトリルート: `/home/tn/projects/DeepTutor`
@@ -19,9 +19,9 @@
 
 | 段階 | 完成条件 | 現状 |
 | --- | --- | --- |
-| A. 中核実装 | 正式問題、採点、回答、期限、復習、廃止版、合否、利用者分離の契約と自動テストが成立 | 未完了 |
-| B. 配布可能 | clean build/wheel install、Docker再作成、永続化、backup/restore、CIが再現可能 | 未完了 |
-| C. 製品受入 | 日本語UI、操作型E2E、音声自動検証、実端末、権利確認済み宅建問題での完走 | 自動化可能部分は未完了、実端末・実データは外部待ち |
+| A. 中核実装 | 正式問題、採点、回答、期限、復習、廃止版、合否、利用者分離の契約と自動テストが成立 | 完了 |
+| B. 配布可能 | clean build/wheel install、Docker再作成、永続化、backup/restore、CIが再現可能 | ローカル検証完了、remote CI待ち |
+| C. 製品受入 | 日本語UI、操作型E2E、音声自動検証、実端末、権利確認済み宅建問題での完走 | 自動化可能部分は完了、Pixel 9a・権利確認済み実データは外部待ち |
 | D. ユーザー判断 | Draft PRで証拠を確認し、merge・公開・配備をユーザーが判断 | 未実施 |
 
 ## 2. 目的
@@ -40,7 +40,7 @@ DeepTutor の単一フォークに、試験固有の問題数、分野名、制�
 
 ## 3. 確認した現状
 
-- `HEAD`、`origin/main`、指定基準commitはすべて `44fa7a15` で一致し、基準commitとの差分はない。
+- CP-04開始時点では`HEAD`、`origin/main`、指定基準commitがすべて`44fa7a15`で一致し、基準commitとの差分はなかった。現在は`44fa7a15`を基準にTJM差分を同一forkへ積み上げている。
 - 適用される指示は `/home/tn/AGENTS.md` とリポジトリ直下 `AGENTS.md`。`/home/tn/projects/AGENTS.md` は存在しない。
 - Python要件は `>=3.11,<3.14`。CIは3.11、3.12、3.13を必須、3.14をbest-effortとしている。
 - Webの正本は `web/package-lock.json`（lockfileVersion 3）。CIとDockerはNode 22と `npm ci --legacy-peer-deps` を使う。
@@ -62,7 +62,7 @@ DeepTutor の単一フォークに、試験固有の問題数、分野名、制�
 9. 宅建の分野名、問題数、制限時間、合格点をPython/TypeScript定数へ固定しない。
 10. TJMの正式データを既存AI Quizの`notebook_entries`へ混在させない。
 
-## 5. 予定する責任分離
+## 5. 現行の責任分離
 
 ### 5.1 保存
 
@@ -252,7 +252,7 @@ Webは正式正解をローカル判定せず、practiceの確定応答または
 
 依存: CP-12後の追加監査
 
-状態: 進行中
+状態: 完了
 
 完了条件:
 
@@ -269,7 +269,7 @@ Webは正式正解をローカル判定せず、practiceの確定応答または
 
 依存: CP-13
 
-状態: 未着手
+状態: 進行中（ローカル検証完了、remote CI待ち）
 
 完了条件:
 
@@ -284,7 +284,7 @@ Webは正式正解をローカル判定せず、practiceの確定応答または
 
 依存: CP-13、CP-14
 
-状態: 未着手
+状態: 内部自動検証完了、外部受入待ち
 
 完了条件:
 
@@ -436,7 +436,7 @@ Webは正式正解をローカル判定せず、practiceの確定応答または
 | branch push | `git push -u origin tjm/implementation` | `origin/tjm/implementation`へtracking付きで成功 |
 | Draft PR | GitHub PR #1 | `tjm/implementation`から`main`へのDraftとして作成。merge未実施 |
 
-## 16.1 CP-13 証拠台帳（進行中）
+## 16.1 CP-13 証拠台帳（完了）
 
 | 項目 | コマンド/証拠 | 結果 |
 | --- | --- | --- |
@@ -498,27 +498,58 @@ Webは正式正解をローカル判定せず、practiceの確定応答または
 | 採点・結果独立レビュー | storage監査、cross-layer再現、修正後のfocused再実行 | 未解決P0/P1なし。reviewer側でもPython 229 passed、Web 407 passed、Ruff、format、TypeScript、対象ESLint、差分検査を確認。未知runtime契約、snapshot/result drift、item/得点矛盾、確定後invalid化raw履歴をREDで修復 |
 | clean publisher検証 | cleanな`737e130d`から差分を同期したpublisher clone、Python 3.13 | Python 229 passed、215 warnings、Web 407 passed、TypeScript、対象ESLint、Ruff、format、JSON parse、`git diff --check`成功 |
 | 採点・結果commit | `f2366799 feat: separate official and practice results` | `origin/tjm/implementation`へpush済み。PR #1はDraftのまま、merge・Ready化・release未実施 |
+| 音声候補DB境界 | Learning migration v6、candidate/confirm/cancelのSQLite参照制約 | 候補はattempt・position・版・未解決状態へ結び付き、別問題・旧候補・二重確定・直接SQL迂回を拒否。独立再監査で未解決P0/P1/P2なし |
+| 最終中核回帰 | `pytest -q` | 3811 passed、8 skipped、9 warnings、44.16秒。既知のCatalog並行初期化失敗は再発せず |
+
+## 16.2 CP-14 証拠台帳（remote CI待ち）
+
+| 項目 | コマンド/証拠 | 結果 |
+| --- | --- | --- |
+| Web依存再現 | `npm ci --legacy-peer-deps`、Node 24.14.0 | 781 packages、`npm audit` 0件。`eslint-plugin-react-hooks` 7.1.1で発生した95 errorsを再現し、Next 16.2.12を維持したまま7.0.1へoverride固定 |
+| Web全検証 | Node 24とDocker内Node 22.23.2でnode test、TypeScript、ESLint | 両環境で426 tests、型検査、TJM対象lint成功。最終lockでfull ESLintもerror 0 / warning 56 |
+| production Web build | Node 22.23.2のDocker build | `/tjm`を含む58 routes、VAD自己配信asset、`npm audit` 0件 |
+| wheel内容 | `scripts/validate_tjm_wheel.py`、`twine check` | packaged Next server/static、TJM Python/Web、VAD資産を検証。SHA256 `1befa5bb5075514a83bbb8c8a403a5e258302afd483559c0804a2bc2078bcf77` |
+| wheel隔離導入 | Python 3.13.12の新規venvへwheel導入、`pip check` | 135 packages、依存整合成功。read-only CWDから`deeptutor start --home`の初回起動、再起動、offline backupを別homeへ復元して成功 |
+| runtime home | runtime settings、setup persona seed、logging configのcall-time path解決 | CLI import前のCWDへ固定されず、明示`--home`配下だけへ設定・ログ・TJM dataを書き込む回帰test成功 |
+| Docker amd64 | `deeptutor:tjm-final-20260815-amd64` | `linux/amd64`、image ID `sha256:09a13ef975e4456b753b11eb9d4e6c9749621bdadbaf8ead58e538fa1f7c7401` |
+| Docker永続化 | production containerの初回起動、再起動、offline backup、別volume復元 | catalog、admin/一般利用者履歴、frontend `/api` proxyを含めて成功。`docker stop`成功、container消滅、API/frontend両port停止をfail-closedで確認 |
+| compose契約 | source/GHCR/Podman/development composeの正規化 | data root全体の永続化、loopback既定、fork/local image、PocketBase `/pb_data`、Next proxy説明を統一。base、base+dev、GHCR、`compose.yaml`の4構成を検証 |
+| release fail-closed | Docker/PyPI workflow | repository variableで外部公開を明示許可制にし、Dockerはtag/version・main・同一SHAの`Test Summary`・arm64 preflightを要求し、自動`latest`を抑止。PyPIも同一SHAの`Test Summary`成功と未使用versionを公開前に要求 |
+| workflow静的検査 | actionlint v1.7.8、PyYAML parse、compose/release契約test | 3 workflowすべて成功、compose/release契約9 tests成功。docs・Docker teardownを含む局所回帰は25 tests成功 |
+| remote CI | Draft PR #1の次回pushで起動する`Tests` workflow | 未確認。必須jobと`Test Summary`が実際にsuccessになるまでCP-14/Bを完了にしない |
+| arm64 | `workflow_dispatch verify_arm64=true` | 未実行の任意preflight。GHCR multi-arch releaseを許可する場合は成功を必須とする |
+
+## 16.3 CP-15 証拠台帳（内部完了、外部待ち）
+
+| 項目 | コマンド/証拠 | 結果 |
+| --- | --- | --- |
+| 日本語UI | `web/i18n/tjm.ts`、`web/locales/ja/tjm.json`、固定namespace test | 学習、試験、結果、復習、分析、管理、音声失敗を日本語化し、宅建固有defaultを持たない |
+| 操作型E2E | real Chromiumで`npm run test:e2e:tjm` | 7/7成功、55.8秒。取り込み・人間レビュー・公開・演習・試験・復習・履歴・mobileを実APIで通過 |
+| 音声自動受入 | Chromium fake microphone + 自己配信Silero VAD | 実VAD経路、終話、STT候補、取消、再認識、確認後確定、TTS中mic停止、音声障害後の画面回答を検証。VAD実経路は22.7秒 |
+| 外部受入 | Pixel 9aで10問、権利確認済み宅建問題50問以上 | 未実施。端末操作と正当な問題・正式出典・対応する合格点根拠が提供されるまで完成判定しない |
 
 ## 17. 既存リスクと今回の扱い
 
 - catalogは共有DB、learningは利用者別DBであるため、問題廃止と全利用者queue取消を単一transactionで即時反映する構造ではない。現在の契約は「各利用者の次のTJM操作より前に必ず同期し、その応答では旧版を有効扱いしない」である。管理操作直後に全利用者DBを物理更新する要件へ変える場合は、DB topologyまたは調整jobの別設計を停止条件として扱う。
 - 認可の独立監査で確認したTJM利用者pathのadmin fallbackと、active exam中に別attempt/historyから同一問題のfeedbackを取得する経路は閉じた。ただしこれは同時API経路の遮断であり、利用者が試験前に知った正解、保存済み画面、別端末の記憶を防ぐ試験監督機能ではない。移行前から同一試験に複数のactive examがあるDBは推測で片方を終了せず保持し、新規開始だけをfail-closedにした。汎用`get_path_service()`のfallbackはTJM外に残る。
-- cookie認証の全TJM更新routeは単一かつ明示allowlist上のOriginを必須とし、認証有効時のCORS `*`/`null`設定も拒否した。ただし同じ保護をTJM外の更新routeへ一括適用したとは主張しない。アプリ全体のCookie/CSRF監査は別範囲であり、Node 22 DockerとTLS reverse proxyでOriginが保持されない場合は検査を緩めず、配備を停止して構成を修正する。
-- 認証有効時もlocalhost frontend用のOriginは既定allowlistに残る。悪用には利用者端末上の悪意あるlocalhost originが別途必要で、独立監査ではP1未満と判定したが、remote-only配備でlocalhostを信頼しない構成を選べるようにするかはCP-14の配備契約で再評価する。
-- npm auditは現在high 3件、moderate 2件、critical 0件である。自動修正が破壊的downgradeになるという過去の記録は今回の再確認で裏付け切れなかったため撤回する。advisoryごとの導入差分、production到達性、修正可否はCP-14で確定する。
+- cookie認証の全TJM更新routeは単一かつ明示allowlist上のOriginを必須とし、認証有効時のCORS `*`/`null`設定も拒否した。ただし同じ保護をTJM外の更新routeへ一括適用したとは主張しない。Node 22のproduction DockerではNext proxyがOrigin、Cookie、method、bodyを保持したが、実TLS reverse proxyは未確認である。Originが保持されない場合は検査を緩めず配備構成を修正する。
+- 認証有効時もlocalhost frontend用のOriginは既定allowlistに残る。composeのhost bindはloopback既定へ修正したが、remote-only配備でlocalhostを信頼しないCORS policyは明示設定が必要である。
+- 最終lockの`npm audit`は0件である。Next 16.2.12を維持しつつ、`eslint-plugin-react-hooks` 7.1.1が既存Web全体へ追加した95 lint errorsを避けるため、動作実績のある7.0.1をoverride固定した。将来更新時はfull ESLint 0 errorsとaudit 0を同時に再検証する。
 - CP-04時点ではPython lockfileがなく範囲依存の最新値を解決した。現在は`uv.lock`を追加したが、Dockerのrequirements経路はまだ同一lockを消費しない。
 - Dockerも `pip install -r requirements.txt` で当日最新を解決し、Python 3.11環境ではローカルPython 3.12環境と一部の解決版が異なる。production build成功は確認したが、将来の同一解決を保証する証拠ではない。
 - mypyの現行コマンドは設定と最新stubが不整合である。TJM追加コードは局所型検査を通し、全体契約修復は独立変更として判断する。
 - `CatalogStore`並行初期化testは独立review環境で3回中1回WAL lockを観測した一方、本作業環境の再実行10回は全成功で再現しなかった。今回差分が触れていないCatalog共通connection上の未確定flakyとして記録し、CP-14または最終全gateで再発した場合は既存失敗扱いで通過させない。
-- ローカルNode 24とCI/Docker Node 22が異なる。Docker buildをNode 22の正本とし、TJM Web検証でもNode 22経路を残す。
+- ローカルNode 24とCI/Docker Node 22の双方で426 node tests、TypeScript、対象lintを実測し、Node 22 production buildも通した。今後もNode 22を配布の正本とする。
 - 実宅建問題データはリポジトリに存在しない。著作権・正確性を推測せず、取り込み・審査機能の完成後に人間が正当なデータを投入する。
 - 実宅建データに対応する公式合格点と根拠資料も同梱していないため、現時点の実データでは`official_score_unavailable`になる。これは汎用の採点機能欠陥ではなく、権利・正確性を確認した実データ受入れの外部待ちである。専用の年度fieldは未実装であり、「年度別合格点を実装済み」とは扱わない。
 - SQLite境界には採点・履歴の主要不変条件を実装したが、local DBへ直接SQLを書ける主体による空文字attempt ID作成は拒否していない。通常APIは`att_<uuid>`を生成し採点改変には直結しないためP2として残し、DBを悪意ある同一OS利用者から守る耐タンパー性は主張しない。
 - legacy整数`pass_score`の元の意味が公式点か利用者目標かは復元できない。正式出典なしに公式値へ昇格させず、利用者が変更・明示解除できる個人目標候補としてだけ遅延移行する判断を採った。この意味論を望まない運用では、利用者が目標を`NULL`へ設定すれば再出現しない。
-- TJM詳細画面の固定UI文言は現時点で英語を正本とし、global navigationだけ既存en/zh catalogへ追加した。機能境界とは分離しているが、日本語UIを配布要件にする場合はlocale追加が必要である。
+- TJM詳細画面、管理導線、結果、音声失敗文言は固定日本語namespaceへ移行済みである。DeepTutor全体の既存翻訳warning 56件はTJM完成範囲ではないが、full ESLintはerror 0を維持する。
 - sherpa ReazonSpeech int8 modelは約162MBでApache-2.0、実測対象CPUでは実時間未満だったが、modelファイル自体は同梱しない。管理者が正当な配布元から取得してpathを設定する。
 - `edge-tts`はMicrosoft Edgeのonline音声serviceを使い、packageはLGPLv3である。可用性・規約・network依存があるため、既存TTS providerを残し自動fallbackにしない。
 - VAD packageは自己配信できるが、実microphone可否・permission・AudioWorkletはbrowser/device依存である。Chromium fake microphoneで実経路を検証し、失敗時は画面回答へ戻れるようにした。実端末・主要ブラウザ全組合せの認証は配備側の受入試験として残る。
+- arm64 Dockerはlocal builderで実行できず、GitHub ActionsのQEMU preflightも未実行である。amd64配布は実測済みだが、multi-arch GHCR公開は同一SHAのarm64 preflight成功をrelease workflowで必須化した。
+- PyPIの`deeptutor==1.5.8`と同名wheel filenameは既に公開済みで、同一filenameは再利用できない。`ENABLE_PYPI_RELEASE`は既定無効とし、未使用versionと既存project権限を確認するかfork固有distribution名を決めるまで公開しない。
 
 ## 18. 追加監査の再現証拠
 
@@ -545,8 +576,9 @@ Webは正式正解をローカル判定せず、practiceの確定応答または
 次の境界でのみ作業を停止し、必要最小限の判断または外部操作を依頼する。
 
 - 既存実データを保つ非破壊migrationを設計できず、backupと復旧経路を確保しても安全に進められない。
-- GitHub Actions設定変更、GHCR公開、本番配備、mainへのmerge、Ready化など、repository所有者の外部操作が必要になる。
+- GitHub Actionsがpush後もworkflowを認識せずowner側の有効化・権限変更が必要になる、またはGHCR/PyPI公開、本番配備、mainへのmerge、Ready化が必要になる。
 - API key、認証情報、秘密情報、高額または有償の外部APIが必要になる。
+- PyPI公開前に、既存`deeptutor` projectの権限と未使用versionを使うか、fork固有distribution名へ変更するかのユーザー判断が必要になる。
 - 実宅建データで公式合否を受入検証する段階で、権利確認済み問題、正式出典、対応する合格点の根拠をユーザーから受け取る必要がある。汎用の公式点・個人目標・決定論的結果機能の実装は、この提供待ちを停止理由にしない。
 - Pixel 9a等の対象実端末で、マイク、スピーカー、イヤホン、実browserを人間が操作する必要がある。
 - 目的、基盤、既存ユーザーデータの前提を変える重大な設計分岐が発生し、実コードから合理的に決められない。

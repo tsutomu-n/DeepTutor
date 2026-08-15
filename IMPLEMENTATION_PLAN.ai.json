@@ -1,9 +1,9 @@
 {
   "schema_version": "1.0",
-  "updated_at": "2026-08-03_17:05",
+  "updated_at": "2026-08-15_11:23",
   "timezone": "Asia/Tokyo",
   "status": "in_progress",
-  "current_checkpoint": "CP-13",
+  "current_checkpoint": "CP-14",
   "execution_state_source": {
     "authoritative": ["IMPLEMENTATION_PLAN.md", "IMPLEMENTATION_PLAN.ai.json"],
     "sp_state": "stale_cp11_read_only_in_current_execution_environment"
@@ -22,7 +22,7 @@
     "初期の問題取り込み、レビュー、公開権限は既存adminに限定する",
     "実宅建問題本文は正当なデータ提供まで同梱しない",
     "正式問題と回答履歴は既存AI Quiz保存領域と分離する",
-    "npm基準が安定する限りBun移行はTJM本体より後に評価する",
+    "npmとNode 22を配布の正本として維持し、Bun移行はTJM完成範囲へ含めない",
     "既存pass_scoreは公式値へ推測移行せず利用者のpractice targetとして保全する",
     "TJM日本語化とDeepTutor全体の日本語化は分離し、今回の製品受入はTJM導線を対象にする",
     "source-build Dockerを配備の正本とし、GHCR publishと本番配備は行わない",
@@ -470,11 +470,10 @@
           "independent_review": "initial review found credentialed wildcard CORS and unguarded learner mutations; re-review found delayed restart failure from unsafe network-settings writes; after all three fixes the final read-only review found no unresolved P0/P1 or settings/API regression and reran 11 focused tests successfully",
           "cors_middleware": "cookie request from an unlisted Origin receives no ACAO and its preflight fails 400; an explicitly listed concrete Origin succeeds",
           "network_settings": "when authentication is enabled, wildcard and opaque origins fail 422 before persistence and prior ports and allowlist remain unchanged",
-          "next_proxy_smoke": "the repository Next dev server preserved frontend Origin, cookie, method, and body for JSON POST, bodyless POST, PATCH, and multipart POST under Node 24 and Chrome 150; Node 22 Docker and TLS remain CP-14 evidence",
+          "next_proxy_smoke": "the repository Next server preserved frontend Origin, cookie, method, and body under Node 24 development and Node 22 production Docker; TLS reverse-proxy deployment remains unverified",
           "catalog_concurrent_init_probe": "reviewer observed one WAL-lock failure in three runs outside this diff; primary reran the exact test ten times successfully, so recurrence remains unconfirmed",
           "ruff_and_diff_check": "passed"
-        },
-        "next_order": ["tjm_japanese_ui", "behavioral_e2e", "voice_automation"]
+        }
       },
       "official_and_target_score_results": {
         "status": "completed",
@@ -505,8 +504,45 @@
           "publisher_clone": "from clean 737e130d under Python 3.13: Python 229, Web 407, TypeScript, targeted ESLint, Ruff, format, JSON parse, and diff check passed"
         },
         "remaining_findings": [],
-        "remote_commit": "f2366799",
-        "next_order": ["tjm_japanese_ui", "behavioral_e2e", "voice_automation"]
+        "remote_commit": "f2366799"
+      },
+      "voice_candidate_integrity": {
+        "status": "completed",
+        "catalog_schema_version": 5,
+        "learning_schema_version": 6,
+        "database_boundary": "voice candidates are bound to attempt, position, question version, proposal, and unresolved state; stale, cross-item, duplicate-confirm, and direct-SQL bypasses fail closed",
+        "independent_review": "no unresolved P0, P1, or P2 after the V6 foreign-key and trigger audit"
+      },
+      "distribution_and_internal_acceptance": {
+        "status": "completed_locally_ci_pending",
+        "python_full": {"passed": 3811, "skipped": 8, "warnings": 9, "seconds": 44.16},
+        "web": {
+          "node_24_tests": 426,
+          "node_22_tests": 426,
+          "typescript": "passed",
+          "targeted_lint": "passed",
+          "full_eslint": {"errors": 0, "warnings": 56},
+          "npm_audit_total": 0,
+          "production_routes": 58
+        },
+        "behavioral_e2e": {"passed": 7, "seconds": 55.8, "real_vad_path_seconds": 22.7},
+        "wheel": {
+          "sha256": "1befa5bb5075514a83bbb8c8a403a5e258302afd483559c0804a2bc2078bcf77",
+          "isolated_install_packages": 135,
+          "pip_check": "passed",
+          "launcher_initial_restart_restore": "passed"
+        },
+        "docker_amd64": {
+          "image_id": "sha256:09a13ef975e4456b753b11eb9d4e6c9749621bdadbaf8ead58e538fa1f7c7401",
+          "architecture": "amd64",
+          "initial_restart_backup_restore": "passed",
+          "teardown_fail_closed": "docker stop success, container absence, and both published ports unavailable are required"
+        },
+        "compose_configurations": 4,
+        "release_contract_tests": 9,
+        "release_controls": "external publication is variable-gated; Docker requires matching version, main ancestry, same-SHA Test Summary, explicit stable or prerelease aliases, and arm64 preflight while automatic latest is disabled; PyPI requires same-SHA Test Summary and rejects an existing version before publish",
+        "arm64": "optional QEMU preflight not run",
+        "remote_ci": "not run for the unpublished workspace changes"
       }
     }
   },
@@ -514,19 +550,19 @@
     {
       "id": "A",
       "name": "core_implementation",
-      "status": "in_progress",
+      "status": "completed",
       "requires": ["catalog_integrity", "server_timing", "idempotency", "expiry", "review_queue", "retirement_policy", "score_results", "authorization"]
     },
     {
       "id": "B",
       "name": "distributable",
-      "status": "pending",
+      "status": "in_progress_ci_pending",
       "requires": ["clean_build", "wheel_install_smoke", "docker_recreate_persistence", "backup_restore", "ci"]
     },
     {
       "id": "C",
       "name": "product_acceptance",
-      "status": "pending_internal_and_external",
+      "status": "pending_external_only",
       "requires": ["tjm_japanese_ui", "behavioral_e2e", "voice_automation", "target_device_acceptance", "licensed_takken_acceptance"]
     },
     {
@@ -538,23 +574,29 @@
   ],
   "residual_risks": [
     "catalog retirement is reconciled into each per-user learning DB before that user's next TJM response, not atomically fanned out to every inactive user DB",
-    "TJM cookie mutations are origin-guarded, but non-TJM state-changing cookie routes have not received an application-wide CSRF audit; Node 22 Docker and TLS reverse-proxy Origin forwarding remain CP-14 evidence",
-    "localhost frontend origins remain trusted when authentication is enabled; independent review rated exploitation as below P1 because it additionally requires a malicious localhost origin, and remote-only deployment policy remains a CP-14 decision",
+    "TJM cookie mutations are origin-guarded, but non-TJM state-changing cookie routes have not received an application-wide CSRF audit; Node 22 Docker proxying passed while a real TLS reverse proxy remains unverified",
+    "localhost frontend origins remain trusted when authentication is enabled; compose binds to loopback by default, while a remote-only CORS policy still requires explicit deployment configuration",
     "Learning v4 preserves pre-existing duplicate active exams without guessing, and the active-exam guard is a concurrent API secrecy control rather than proctoring",
     "the generic get_path_service admin fallback remains outside TJM and is not closed application-wide",
-    "npm audit remains at high 3 and moderate 2; advisory reachability and fixes require CP-14 evidence",
+    "eslint-plugin-react-hooks is pinned to 7.0.1 because 7.1.1 introduced 95 full-repository lint errors; future updates must preserve both zero lint errors and zero npm audit vulnerabilities",
     "Docker requirements installation does not consume uv.lock",
     "full mypy remains blocked by the baseline Python 3.11 and NumPy stub mismatch",
+    "linux arm64 Docker has not run locally or in the optional GitHub QEMU preflight; multi-arch publication is blocked until that check succeeds",
     "licensed Takken question data and the sherpa model are not bundled",
     "official passing scores and evidence sources for licensed Takken data are not bundled, so real-data official results remain unavailable until acceptance data is supplied",
     "direct SQL can create an empty attempt id, although first-party APIs always generate att_<uuid> ids and this does not alter score facts; malicious local-DB tamper resistance is not claimed",
     "the original meaning of an integer legacy pass_score is unprovable; it is never promoted to an official score and only seeds a user-editable personal target that an explicit null tombstone can permanently clear",
-    "TJM workspace detailed copy is English-first; only global navigation follows the existing en/zh catalog"
+    "PyPI already contains deeptutor 1.5.8 and the fork has no proven ownership of that project; publication stays disabled until an unused authorized version or fork-specific distribution name is chosen"
   ],
   "publication": {
     "feature_commit": "80339c862d11c9432ca9c20be7b8b6bff6c98536",
-    "latest_remote_commit": "f2366799",
+    "latest_remote_commit": "5219ef0f4fde6fe0036b5b59b31a0143bfd38263",
     "remote_branch": "origin/tjm/implementation",
+    "remote_ci": {
+      "status": "no_checks_before_next_push",
+      "workflow_runs": 0,
+      "completion_gate": "required jobs and Test Summary must succeed after the next push"
+    },
     "pull_request": {
       "number": 1,
       "url": "https://github.com/tsutomu-n/DeepTutor/pull/1",
@@ -623,19 +665,19 @@
     {
       "id": "CP-13",
       "title": "中核整合性の修復",
-      "status": "in_progress",
+      "status": "completed",
       "depends_on": ["CP-12"]
     },
     {
       "id": "CP-14",
       "title": "配布と永続化",
-      "status": "pending",
+      "status": "in_progress",
       "depends_on": ["CP-13"]
     },
     {
       "id": "CP-15",
       "title": "製品受入",
-      "status": "pending",
+      "status": "pending_external",
       "depends_on": ["CP-13", "CP-14"]
     },
     {
@@ -654,8 +696,9 @@
   ],
   "stop_conditions": [
     "non_destructive_migration_cannot_preserve_existing_data_even_with_backup_and_recovery",
-    "repository_owner_action_is_required_for_actions_ghcr_deploy_merge_or_ready_state",
+    "repository_owner_action_is_required_to_enable_actions_change_permissions_publish_ghcr_or_pypi_deploy_merge_or_mark_ready",
     "api_key_secret_paid_external_api_or_production_credential_is_required",
+    "pypi_distribution_ownership_version_or_fork_name_decision_is_required_before_publication",
     "licensed_takken_content_official_source_or_yearly_score_evidence_is_required",
     "human_operation_on_target_device_and_real_browser_is_required",
     "major_goal_architecture_or_existing_user_data_assumption_cannot_be_resolved_from_repository_evidence"
