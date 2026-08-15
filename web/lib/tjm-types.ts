@@ -107,12 +107,27 @@ export interface TjmAttemptResult {
 }
 
 export interface TjmResultDimensionDisplay {
-  label: string
+  labelKey:
+    | 'result.status.officialPassed'
+    | 'result.status.officialFailed'
+    | 'result.status.practiceAchieved'
+    | 'result.status.practiceNotAchieved'
+    | 'result.status.notEvaluated'
   threshold: number | null
   evaluated: boolean
   positive: boolean
-  reason: string | null
+  reasonKey: TjmResultReasonKey | null
 }
+
+export type TjmResultReasonKey =
+  | 'result.reason.noProjection'
+  | 'result.reason.officialScoreUnavailable'
+  | 'result.reason.practiceTargetUnset'
+  | 'result.reason.modeNotEligible'
+  | 'result.reason.contentInvalidated'
+  | 'result.reason.incompleteScoreScope'
+  | 'result.reason.legacyScoreAmbiguous'
+  | 'result.reason.unknown'
 
 export interface TjmResultDisplay {
   official: TjmResultDimensionDisplay
@@ -423,25 +438,22 @@ export function hasGrade(item: TjmAttemptItem): item is TjmAttemptItemBase & Tjm
   )
 }
 
-const INVALIDATED_RESULT_REASON =
-  'Content was invalidated after grading; the raw score is retained, but official and personal target results are not evaluated.'
-
-export function formatTjmNotEvaluatedReason(reason: unknown): string {
+export function getTjmNotEvaluatedReasonKey(reason: unknown): TjmResultReasonKey {
   switch (reason) {
     case 'official_score_unavailable':
-      return 'An official passing score is not available for this exam.'
+      return 'result.reason.officialScoreUnavailable'
     case 'practice_target_unset':
-      return 'A personal practice target was not set when this attempt began.'
+      return 'result.reason.practiceTargetUnset'
     case 'mode_not_eligible':
-      return 'This attempt mode is not eligible for this result.'
+      return 'result.reason.modeNotEligible'
     case 'content_invalidated':
-      return INVALIDATED_RESULT_REASON
+      return 'result.reason.contentInvalidated'
     case 'incomplete_score_scope':
-      return 'The scored question scope is incomplete, so this result is not evaluated.'
+      return 'result.reason.incompleteScoreScope'
     case 'legacy_score_ambiguous':
-      return 'This legacy attempt does not distinguish an official score from a personal target.'
+      return 'result.reason.legacyScoreAmbiguous'
     default:
-      return 'Not evaluated.'
+      return 'result.reason.unknown'
   }
 }
 
@@ -449,11 +461,11 @@ export function getTjmResultDisplay(result: TjmAttemptResult | null): TjmResultD
   const normalized = normalizeTjmAttemptResult(result)
   if (normalized === null) {
     const notAvailable: TjmResultDimensionDisplay = {
-      label: 'Not evaluated',
+      labelKey: 'result.status.notEvaluated',
       threshold: null,
       evaluated: false,
       positive: false,
-      reason: 'No deterministic result projection is available.',
+      reasonKey: 'result.reason.noProjection',
     }
     return { official: notAvailable, practiceTarget: { ...notAvailable } }
   }
@@ -462,50 +474,50 @@ export function getTjmResultDisplay(result: TjmAttemptResult | null): TjmResultD
   if (result.validity === 'content_invalidated') {
     return {
       official: {
-        label: 'Not evaluated',
+        labelKey: 'result.status.notEvaluated',
         threshold: result.official.threshold,
         evaluated: false,
         positive: false,
-        reason: INVALIDATED_RESULT_REASON,
+        reasonKey: 'result.reason.contentInvalidated',
       },
       practiceTarget: {
-        label: 'Not evaluated',
+        labelKey: 'result.status.notEvaluated',
         threshold: result.practice_target.threshold,
         evaluated: false,
         positive: false,
-        reason: INVALIDATED_RESULT_REASON,
+        reasonKey: 'result.reason.contentInvalidated',
       },
     }
   }
 
   const official: TjmResultDimensionDisplay = {
-    label:
+    labelKey:
       result.official.status === 'passed'
-        ? 'Passed'
+        ? 'result.status.officialPassed'
         : result.official.status === 'failed'
-          ? 'Failed'
-          : 'Not evaluated',
+          ? 'result.status.officialFailed'
+          : 'result.status.notEvaluated',
     threshold: result.official.threshold,
     evaluated: result.official.status !== 'not_evaluated',
     positive: result.official.status === 'passed',
-    reason:
+    reasonKey:
       result.official.status === 'not_evaluated'
-        ? formatTjmNotEvaluatedReason(result.official.not_evaluated_reason)
+        ? getTjmNotEvaluatedReasonKey(result.official.not_evaluated_reason)
         : null,
   }
   const practiceTarget: TjmResultDimensionDisplay = {
-    label:
+    labelKey:
       result.practice_target.status === 'achieved'
-        ? 'Target achieved'
+        ? 'result.status.practiceAchieved'
         : result.practice_target.status === 'not_achieved'
-          ? 'Target not achieved'
-          : 'Not evaluated',
+          ? 'result.status.practiceNotAchieved'
+          : 'result.status.notEvaluated',
     threshold: result.practice_target.threshold,
     evaluated: result.practice_target.status !== 'not_evaluated',
     positive: result.practice_target.status === 'achieved',
-    reason:
+    reasonKey:
       result.practice_target.status === 'not_evaluated'
-        ? formatTjmNotEvaluatedReason(result.practice_target.not_evaluated_reason)
+        ? getTjmNotEvaluatedReasonKey(result.practice_target.not_evaluated_reason)
         : null,
   }
   return { official, practiceTarget }

@@ -10,10 +10,6 @@
 # ============================================
 
 services:
-  pocketbase:
-    volumes:
-      - ./data/pocketbase:/pb/pb_data
-
   deeptutor:
     build:
       target: development

@@ -239,11 +239,15 @@ export function recordTjmVoiceCandidate(
   position: number,
   transcript: string,
   elapsedMs: number,
-  idempotencyKey: string
+  idempotencyKey: string,
+  signal?: AbortSignal
 ): Promise<TjmVoiceCandidate> {
   return requestJson(
     `/attempts/${encodeURIComponent(attemptId)}/items/${position}/voice-candidate`,
-    tjmCommandInit('POST', { transcript, elapsed_ms: elapsedMs }, idempotencyKey)
+    {
+      ...tjmCommandInit('POST', { transcript, elapsed_ms: elapsedMs }, idempotencyKey),
+      signal,
+    }
   )
 }
 
@@ -265,11 +269,12 @@ export function cancelTjmVoiceCandidate(
   attemptId: string,
   position: number,
   candidateId: number,
-  idempotencyKey: string
+  idempotencyKey: string,
+  signal?: AbortSignal
 ): Promise<{ candidate_id: number; status: 'cancelled' }> {
   return requestJson(
     `/attempts/${encodeURIComponent(attemptId)}/items/${position}/voice-candidates/${candidateId}/cancel`,
-    tjmCommandInit('POST', undefined, idempotencyKey)
+    { ...tjmCommandInit('POST', undefined, idempotencyKey), signal }
   )
 }
 

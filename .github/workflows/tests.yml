@@ -1,6 +1,13 @@
 name: Tests
 
 on:
+  workflow_dispatch:
+    inputs:
+      verify_arm64:
+        description: Run the slow QEMU-backed arm64 image and runtime gate before a release
+        required: false
+        type: boolean
+        default: false
   push:
     branches:
       - main
@@ -8,12 +15,28 @@ on:
     paths:
       - "deeptutor/**"
       - "deeptutor_cli/**"
+      - "deeptutor_web/**"
       - "tests/**"
       - "requirements/**"
       - "requirements.txt"
       - "pyproject.toml"
+      - "uv.lock"
       - "web/**"
+      - "scripts/**"
+      - "Dockerfile"
+      - "Dockerfile.runner"
+      - "docker-compose*.yml"
+      - "compose.yaml"
+      - ".dockerignore"
+      - "MANIFEST.in"
+      - "README.md"
+      - "CONTAINERIZATION.md"
+      - "assets/README/**"
+      - "LICENSE"
+      - "THIRD_PARTY_NOTICES.md"
       - ".github/workflows/tests.yml"
+      - ".github/workflows/docker-release.yml"
+      - ".github/workflows/pypi-release.yml"
   pull_request:
     branches:
       - main
@@ -21,12 +44,35 @@ on:
     paths:
       - "deeptutor/**"
       - "deeptutor_cli/**"
+      - "deeptutor_web/**"
       - "tests/**"
       - "requirements/**"
       - "requirements.txt"
       - "pyproject.toml"
+      - "uv.lock"
       - "web/**"
+      - "scripts/**"
+      - "Dockerfile"
+      - "Dockerfile.runner"
+      - "docker-compose*.yml"
+      - "compose.yaml"
+      - ".dockerignore"
+      - "MANIFEST.in"
+      - "README.md"
+      - "CONTAINERIZATION.md"
+      - "assets/README/**"
+      - "LICENSE"
+      - "THIRD_PARTY_NOTICES.md"
       - ".github/workflows/tests.yml"
+      - ".github/workflows/docker-release.yml"
+      - ".github/workflows/pypi-release.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
   lint:
@@ -53,6 +99,23 @@ jobs:
       - name: Run Ruff format check
         run: ruff format --check .
 
+  compose-config:
+    name: Docker Compose Configuration
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Validate supported Compose configurations
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose -f docker-compose.yml config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.dev.yml config --quiet
+          docker compose -f docker-compose.ghcr.yml config --quiet
+          docker compose -f compose.yaml config --quiet
+
   web-tests:
     name: Web Node Tests
     runs-on: ubuntu-latest
@@ -75,6 +138,259 @@ jobs:
       - name: Run frontend node tests
         working-directory: web
         run: npm run test:node
+
+      - name: Run frontend type check
+        working-directory: web
+        run: npx tsc --noEmit
+
+      - name: Lint TJM frontend surfaces
+        working-directory: web
+        run: >-
+          npx eslint
+          components/tjm/TjmWorkspace.tsx
+          components/ui/ConfirmDialog.tsx
+          hooks/useTjmVoice.ts
+          i18n/tjm.ts
+          lib/tjm-*.ts
+          tests/tjm-*.test.ts
+          tests/e2e/*.ts
+          playwright.tjm.config.ts
+
+  tjm-e2e:
+    name: TJM Browser E2E (Node 22)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Reproduce Python dependencies from uv.lock
+        run: uv sync --frozen
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: web
+        run: npm ci --legacy-peer-deps
+
+      - name: Install Playwright Chromium
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+
+      - name: Run isolated TJM browser flows
+        working-directory: web
+        run: npm run test:e2e:tjm
+
+      - name: Upload TJM browser diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tjm-playwright-diagnostics
+          path: |
+            web/playwright-report/tjm
+            web/test-results/tjm
+          if-no-files-found: ignore
+          retention-days: 7
+
+  tjm-wheel-distribution:
+    name: TJM Wheel Distribution (Node 22 / Python 3.11)
+    needs: [lint, web-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install frontend dependencies
+        working-directory: web
+        run: npm ci --legacy-peer-deps
+
+      - name: Require zero npm vulnerabilities
+        working-directory: web
+        shell: bash
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/tjm-npm-audit.json"
+          set +e
+          npm audit --json --audit-level=low | tee "$report"
+          audit_status="${PIPESTATUS[0]}"
+          set -e
+          node - "$report" <<'NODE'
+          const fs = require("node:fs");
+          const report = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+          const total = report?.metadata?.vulnerabilities?.total;
+          if (total !== 0) {
+            throw new Error(`npm audit must report exactly 0 vulnerabilities; found ${total}`);
+          }
+          NODE
+          exit "$audit_status"
+
+      - name: Build portable production Web package
+        run: python scripts/prepare_web_package.py
+        env:
+          NEXT_PUBLIC_API_BASE: __NEXT_PUBLIC_API_BASE_PLACEHOLDER__
+          NEXT_PUBLIC_AUTH_ENABLED: __NEXT_PUBLIC_AUTH_ENABLED_PLACEHOLDER__
+
+      - name: Install wheel build tools
+        run: python -m pip install --upgrade build twine
+
+      - name: Build and validate wheel
+        id: wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/tjm-ci
+          (cd /tmp && python -m build --wheel --outdir "$GITHUB_WORKSPACE/dist/tjm-ci" "$GITHUB_WORKSPACE")
+          mapfile -t wheels < <(find dist/tjm-ci -maxdepth 1 -type f -name '*.whl' -print)
+          if [[ "${#wheels[@]}" -ne 1 ]]; then
+            echo "Expected exactly one wheel, found ${#wheels[@]}" >&2
+            exit 1
+          fi
+          wheel_path="$(realpath "${wheels[0]}")"
+          python -m twine check "$wheel_path"
+          python scripts/validate_tjm_wheel.py "$wheel_path"
+          echo "path=$wheel_path" >> "$GITHUB_OUTPUT"
+
+      - name: Install wheel in an isolated environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv /tmp/deeptutor-tjm-wheel-venv
+          /tmp/deeptutor-tjm-wheel-venv/bin/python -m pip install --upgrade pip
+          /tmp/deeptutor-tjm-wheel-venv/bin/python -m pip install "${{ steps.wheel.outputs.path }}"
+          /tmp/deeptutor-tjm-wheel-venv/bin/python -m pip check
+          /tmp/deeptutor-tjm-wheel-venv/bin/python -I - <<'PY'
+          from pathlib import Path
+          import sys
+
+          import deeptutor
+          import deeptutor_web
+
+          environment = Path(sys.prefix).resolve()
+          for module in (deeptutor, deeptutor_web):
+              Path(module.__file__).resolve().relative_to(environment)
+          PY
+
+      - name: Smoke installed launcher, restart, and backup restore
+        run: >-
+          python scripts/tjm_distribution_smoke.py launcher
+          --deeptutor /tmp/deeptutor-tjm-wheel-venv/bin/deeptutor
+
+  tjm-docker-amd64:
+    name: TJM Docker Distribution (linux/amd64)
+    needs: [lint, web-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build amd64 production image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          target: production
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: deeptutor:tjm-ci-amd64
+          cache-from: type=gha,scope=tjm-production-amd64
+          cache-to: type=gha,mode=max,scope=tjm-production-amd64,ignore-error=true
+
+      - name: Verify amd64 image architecture
+        run: test "$(docker image inspect deeptutor:tjm-ci-amd64 --format '{{.Architecture}}')" = amd64
+
+      - name: Smoke image runtime, restart, and backup restore
+        run: python scripts/tjm_distribution_smoke.py docker --image deeptutor:tjm-ci-amd64
+        env:
+          DOCKER_DEFAULT_PLATFORM: linux/amd64
+
+  tjm-docker-arm64:
+    name: TJM Docker Pre-release Preflight (linux/arm64 via QEMU)
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_arm64 }}
+    needs: tjm-docker-amd64
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up arm64 emulation
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build arm64 production image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          target: production
+          platforms: linux/arm64
+          load: true
+          push: false
+          tags: deeptutor:tjm-ci-arm64
+          cache-from: type=gha,scope=tjm-production-arm64
+          cache-to: type=gha,mode=max,scope=tjm-production-arm64,ignore-error=true
+
+      - name: Verify arm64 image architecture
+        run: test "$(docker image inspect deeptutor:tjm-ci-arm64 --format '{{.Architecture}}')" = arm64
+
+      - name: Record arm64 pre-release evidence
+        shell: bash
+        run: |
+          {
+            echo "### TJM arm64 pre-release evidence"
+            echo "- Commit: $GITHUB_SHA"
+            echo "- Image ID: $(docker image inspect deeptutor:tjm-ci-arm64 --format '{{.Id}}')"
+            echo "- Architecture: $(docker image inspect deeptutor:tjm-ci-arm64 --format '{{.Architecture}}')"
+            echo "- Execution: QEMU emulation on $RUNNER_ARCH"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Smoke emulated arm64 runtime, restart, and backup restore
+        run: python scripts/tjm_distribution_smoke.py docker --image deeptutor:tjm-ci-arm64
+        env:
+          DOCKER_DEFAULT_PLATFORM: linux/arm64
 
   import-check:
     name: Import Check (Python ${{ matrix.python-version }})
@@ -182,7 +498,16 @@ jobs:
   test-summary:
     name: Test Summary
     runs-on: ubuntu-latest
-    needs: [lint, web-tests, import-check, python-tests]
+    needs:
+      - lint
+      - compose-config
+      - web-tests
+      - tjm-e2e
+      - tjm-wheel-distribution
+      - tjm-docker-amd64
+      - tjm-docker-arm64
+      - import-check
+      - python-tests
     if: always()
 
     steps:
@@ -193,10 +518,26 @@ jobs:
           echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
           echo "| Lint and format | ${{ needs.lint.result == 'success' && '✅ Passed' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Docker Compose configuration | ${{ needs.compose-config.result == 'success' && '✅ Passed' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Web node tests | ${{ needs.web-tests.result == 'success' && '✅ Passed' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| TJM browser E2E (Node 22) | ${{ needs.tjm-e2e.result == 'success' && '✅ Passed' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| TJM wheel distribution | ${{ needs.tjm-wheel-distribution.result == 'success' && '✅ Passed' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| TJM Docker runtime (linux/amd64) | ${{ needs.tjm-docker-amd64.result == 'success' && '✅ Passed' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| TJM Docker pre-release preflight (linux/arm64 via QEMU) | ${{ (github.event_name != 'workflow_dispatch' || !inputs.verify_arm64) && '⏭️ Not requested' || (needs.tjm-docker-arm64.result == 'success' && '✅ Passed' || '❌ Failed') }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Import check (3.11/3.12/3.13; 3.14 best-effort) | ${{ needs.import-check.result == 'success' && '✅ Passed' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Python tests (3.11/3.12/3.13; 3.14 best-effort) | ${{ needs.python-tests.result == 'success' && '✅ Passed' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
 
       - name: Fail if tests failed
-        if: needs.lint.result == 'failure' || needs.web-tests.result == 'failure' || needs.import-check.result == 'failure' || needs.python-tests.result == 'failure'
+        if: >-
+          needs.lint.result != 'success' ||
+          needs.compose-config.result != 'success' ||
+          needs.web-tests.result != 'success' ||
+          needs.tjm-e2e.result != 'success' ||
+          needs.tjm-wheel-distribution.result != 'success' ||
+          needs.tjm-docker-amd64.result != 'success' ||
+          (github.event_name == 'workflow_dispatch' &&
+          inputs.verify_arm64 &&
+          needs.tjm-docker-arm64.result != 'success') ||
+          needs.import-check.result != 'success' ||
+          needs.python-tests.result != 'success'
         run: exit 1

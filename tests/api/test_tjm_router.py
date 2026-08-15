@@ -1317,6 +1317,30 @@ def test_voice_answer_api_saves_only_after_candidate_confirmation(
     assert repeated.status_code == 409
 
 
+def test_voice_answer_api_rejects_identifiers_outside_sqlite_integer_range(
+    learner_client: TestClient,
+) -> None:
+    started = learner_client.post(
+        "/api/v1/tjm/attempts", json={"exam_id": "exam-learn", "mode": "exam"}
+    ).json()
+    attempt_id = started["id"]
+    too_large = 2**63
+
+    position = learner_client.post(
+        f"/api/v1/tjm/attempts/{attempt_id}/items/{too_large}/hint",
+        json={"elapsed_ms": 0},
+    )
+    candidate = learner_client.post(
+        f"/api/v1/tjm/attempts/{attempt_id}/items/0/voice-candidates/{too_large}/confirm",
+        json={"confidence": 50, "elapsed_ms": 0},
+    )
+
+    assert position.status_code == 400
+    assert candidate.status_code == 400
+    assert "SQLite integer range" in position.json()["detail"]
+    assert "SQLite integer range" in candidate.json()["detail"]
+
+
 def test_invalidated_question_rejects_answer_and_never_returns_official_grade(
     learner_client: TestClient, catalog: CatalogService
 ) -> None:

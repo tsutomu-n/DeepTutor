@@ -13,6 +13,10 @@ PUBLIC_DOCS = (
     ROOT / "deeptutor_cli" / "README.md",
     ROOT / "SKILL.md",
 )
+HISTORICAL_UPSTREAM_TRANSLATIONS = {
+    f"assets/README/README_{language}.md"
+    for language in ("AR", "CN", "ES", "FR", "HI", "PL", "PT", "RU", "TH")
+}
 
 
 def _command_doc_paths() -> list[Path]:
@@ -122,3 +126,26 @@ def test_docs_do_not_advertise_removed_cli_forms() -> None:
     assert "deeptutor provider logout" not in text
     assert "deeptutor memory show summary" not in text
     assert "WS /api/v1/turns" not in text
+
+
+def test_tjm_readme_only_links_synchronized_translations() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    readme_ja = (ROOT / "assets/README/README_JA.md").read_text(encoding="utf-8")
+    linked_translations = set(re.findall(r'href="(assets/README/README_[A-Z]+\.md)"', readme))
+    linked_translations_ja = set(re.findall(r'href="(README_[A-Z]+\.md)"', readme_ja))
+
+    assert linked_translations == {"assets/README/README_JA.md"}
+    assert linked_translations.isdisjoint(HISTORICAL_UPSTREAM_TRANSLATIONS)
+    assert linked_translations_ja == {"README_JA.md"}
+    assert linked_translations_ja.isdisjoint(
+        {Path(path).name for path in HISTORICAL_UPSTREAM_TRANSLATIONS}
+    )
+    assert "Only the English and Japanese guides are synchronized with the TJM fork" in readme
+    assert "TJMフォークと同期しているガイドは英語版と日本語版だけです" in readme_ja
+
+
+def test_containerization_links_to_root_readme() -> None:
+    guide = (ROOT / "CONTAINERIZATION.md").read_text(encoding="utf-8")
+
+    assert "[README.md](README.md)" in guide
+    assert "[README.md](../README.md)" not in guide

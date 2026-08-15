@@ -12,6 +12,9 @@ name: PyPI Release
 #
 # PyPI authentication uses Trusted Publishing. Configure the `deeptutor` PyPI
 # project to trust this workflow file, then no API token secret is needed.
+# Publication is disabled unless the repository owner explicitly sets
+# ENABLE_PYPI_RELEASE=true after choosing an unused version and confirming
+# ownership of the target PyPI distribution.
 
 on:
   release:
@@ -19,6 +22,7 @@ on:
 
 permissions:
   contents: read
+  checks: read
   id-token: write
 
 concurrency:
@@ -28,6 +32,7 @@ concurrency:
 jobs:
   build-and-publish:
     name: Build and Publish PyPI Package
+    if: ${{ github.repository == 'tsutomu-n/DeepTutor' && vars.ENABLE_PYPI_RELEASE == 'true' }}
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -51,6 +56,30 @@ jobs:
             echo "Release tag $tag ($tag_commit) is not on origin/main; refusing to publish to PyPI." >&2
             exit 1
           fi
+
+      - name: Verify release commit acceptance checks
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag_commit="$(git rev-list -n 1 "${{ github.event.release.tag_name }}")"
+          check_runs="$(
+            gh api --method GET \
+              "repos/${GITHUB_REPOSITORY}/commits/${tag_commit}/check-runs" \
+              -f per_page=100
+          )"
+          required_checks=(
+            "Test Summary"
+          )
+          for required_check in "${required_checks[@]}"; do
+            if ! jq -e --arg name "$required_check" \
+              '[.check_runs[] | select(.name == $name and .status == "completed" and .conclusion == "success")] | length > 0' \
+              <<<"$check_runs" >/dev/null; then
+              echo "Required successful check missing for $tag_commit: $required_check" >&2
+              exit 1
+            fi
+          done
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -77,6 +106,7 @@ jobs:
           python - <<'PY'
           import os
           import re
+          import tomllib
           from pathlib import Path
           from packaging.version import Version
 
@@ -91,6 +121,7 @@ jobs:
                   "Could not find __version__ in deeptutor/__version__.py"
               )
           code_version = str(Version(match.group(1)))
+          package_name = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["name"]
 
           if code_version != tag_version:
               raise SystemExit(
@@ -101,9 +132,39 @@ jobs:
 
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
               handle.write(f"version={code_version}\n")
+              handle.write(f"package_name={package_name}\n")
           PY
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
+
+      - name: Refuse an existing PyPI version
+        shell: bash
+        env:
+          PACKAGE_NAME: ${{ steps.version.outputs.package_name }}
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from urllib.error import HTTPError
+          from urllib.request import urlopen
+
+          package = os.environ["PACKAGE_NAME"]
+          version = os.environ["PACKAGE_VERSION"]
+          url = f"https://pypi.org/pypi/{package}/{version}/json"
+          try:
+              with urlopen(url, timeout=30) as response:
+                  response.read(1)
+          except HTTPError as exc:
+              if exc.code == 404:
+                  print(f"PyPI version is available: {package}=={version}")
+              else:
+                  raise
+          else:
+              raise SystemExit(
+                  f"PyPI already contains {package}=={version}; refusing publication"
+              )
+          PY
 
       - name: Install frontend dependencies
         working-directory: web
@@ -146,6 +207,29 @@ jobs:
           if missing:
               raise SystemExit(f"Missing expected distributions: {missing}")
           PY
+
+      - name: Validate TJM wheel contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t wheels < <(find dist/deeptutor -maxdepth 1 -type f -name '*.whl' -print)
+          if [[ "${#wheels[@]}" -ne 1 ]]; then
+            echo "Expected exactly one wheel, found ${#wheels[@]}" >&2
+            exit 1
+          fi
+          python scripts/validate_tjm_wheel.py "${wheels[0]}"
+
+      - name: Smoke installed wheel before publication
+        shell: bash
+        run: |
+          set -euo pipefail
+          wheel_path="$(find dist/deeptutor -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          python -m venv "$RUNNER_TEMP/deeptutor-release-venv"
+          "$RUNNER_TEMP/deeptutor-release-venv/bin/python" -m pip install --upgrade pip
+          "$RUNNER_TEMP/deeptutor-release-venv/bin/python" -m pip install "$wheel_path"
+          "$RUNNER_TEMP/deeptutor-release-venv/bin/python" -m pip check
+          python scripts/tjm_distribution_smoke.py launcher \
+            --deeptutor "$RUNNER_TEMP/deeptutor-release-venv/bin/deeptutor"
 
       - name: Publish deeptutor to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

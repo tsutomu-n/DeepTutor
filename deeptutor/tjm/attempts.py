@@ -19,6 +19,7 @@ from .domain import (
 from .storage import LearningStore
 
 AttemptMode = Literal["practice", "exam", "review"]
+_SQLITE_INTEGER_MAX = 2**63 - 1
 
 
 def _now_datetime() -> datetime:
@@ -979,8 +980,9 @@ class AttemptService:
                     INSERT INTO answer_events (
                         attempt_id, position, event_type, option_key, confidence,
                         elapsed_ms, transcript, created_at, client_event_id,
-                        server_elapsed_ms, client_active_elapsed_ms
-                    ) VALUES (?, ?, 'voice_confirmed', ?, ?, ?, ?, ?, ?, ?, ?)
+                        server_elapsed_ms, client_active_elapsed_ms,
+                        voice_candidate_id
+                    ) VALUES (?, ?, 'voice_confirmed', ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         attempt_id,
@@ -993,6 +995,7 @@ class AttemptService:
                         key,
                         server_elapsed_ms,
                         elapsed_ms,
+                        candidate_id,
                     ),
                 )
                 conn.execute(
@@ -1083,8 +1086,8 @@ class AttemptService:
                     """
                     INSERT INTO answer_events (
                         attempt_id, position, event_type, option_key, transcript, created_at,
-                        client_event_id
-                    ) VALUES (?, ?, 'voice_cancelled', ?, ?, ?, ?)
+                        client_event_id, voice_candidate_id
+                    ) VALUES (?, ?, 'voice_cancelled', ?, ?, ?, ?, ?)
                     """,
                     (
                         attempt_id,
@@ -1093,6 +1096,7 @@ class AttemptService:
                         candidate["transcript"],
                         now,
                         key,
+                        candidate_id,
                     ),
                 )
                 result = {"candidate_id": candidate_id, "status": "cancelled"}
@@ -1814,14 +1818,28 @@ class AttemptService:
 
     @staticmethod
     def _validate_position(value: int) -> int:
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            raise DomainValidationError("position must be a non-negative integer")
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or value < 0
+            or value > _SQLITE_INTEGER_MAX
+        ):
+            raise DomainValidationError(
+                "position must be a non-negative integer in the SQLite integer range"
+            )
         return value
 
     @staticmethod
     def _validate_candidate_id(value: int) -> int:
-        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-            raise DomainValidationError("candidate_id must be a positive integer")
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or value <= 0
+            or value > _SQLITE_INTEGER_MAX
+        ):
+            raise DomainValidationError(
+                "candidate_id must be a positive integer in the SQLite integer range"
+            )
         return value
 
     @staticmethod
@@ -1979,23 +1997,14 @@ class AttemptService:
         ).fetchone()
         if candidate is None:
             raise DomainValidationError(f"unknown voice candidate: {candidate_id}")
-        latest = conn.execute(
-            """
-            SELECT MAX(id) FROM answer_events
-            WHERE attempt_id = ? AND position = ? AND event_type = 'voice_candidate'
-            """,
-            (attempt_id, position),
-        ).fetchone()[0]
-        if int(latest) != candidate_id:
-            raise InvalidTransitionError("only the latest voice candidate can be resolved")
         resolution = conn.execute(
             """
             SELECT 1 FROM answer_events
-            WHERE attempt_id = ? AND position = ? AND id > ?
+            WHERE voice_candidate_id = ?
               AND event_type IN ('voice_confirmed', 'voice_cancelled')
             LIMIT 1
             """,
-            (attempt_id, position, candidate_id),
+            (candidate_id,),
         ).fetchone()
         if resolution is not None:
             raise InvalidTransitionError("voice candidate is already resolved")

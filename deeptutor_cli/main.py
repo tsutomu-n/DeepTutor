@@ -24,7 +24,6 @@ from .session_cmd import register as register_session
 from .skill import register as register_skill
 
 set_mode(RunMode.CLI)
-configure_logging()
 
 app = typer.Typer(
     name="deeptutor",
@@ -32,6 +31,14 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+
+
+@app.callback()
+def _bootstrap_cli(ctx: typer.Context) -> None:
+    """Configure logging after command routing selects the runtime home."""
+    if ctx.invoked_subcommand not in {"start", "init"}:
+        configure_logging()
+
 
 partner_app = typer.Typer(help="Manage partners (IM-connected companions).")
 chat_app = typer.Typer(help="Interactive chat REPL.")

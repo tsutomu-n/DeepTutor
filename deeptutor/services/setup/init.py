@@ -172,10 +172,10 @@ def _ensure_essential_settings(path_service) -> None:
     except Exception as e:
         _get_setup_logger().warning(f"Failed to initialise runtime JSON settings: {e}")
 
-    _seed_default_personas()
+    _seed_default_personas(path_service)
 
 
-def _seed_default_personas() -> None:
+def _seed_default_personas(admin_path_service) -> None:
     """Seed the bundled persona presets into the admin workspace on first run.
 
     Fresh installs otherwise show an empty Persona list even though the docs
@@ -184,10 +184,9 @@ def _seed_default_personas() -> None:
     Best-effort — never blocks startup.
     """
     try:
-        from deeptutor.multi_user.paths import get_admin_path_service
         from deeptutor.services.persona.service import PersonaService
 
-        admin_personas = get_admin_path_service().get_workspace_dir() / "personas"
+        admin_personas = admin_path_service.get_workspace_dir() / "personas"
         seeded = PersonaService(root=admin_personas).seed_presets()
         if seeded:
             _get_setup_logger().info(f"Seeded default personas: {', '.join(seeded)}")

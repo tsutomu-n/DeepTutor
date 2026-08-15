@@ -1,7 +1,5 @@
 'use client'
 
-/* eslint-disable i18n/no-literal-ui-text -- TJM ships its detailed exam workspace copy as one English-first surface; the global route label remains in the existing en/zh catalogs. */
-
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import {
   BarChart3,
@@ -30,10 +28,9 @@ import {
   Volume2,
   VolumeX,
 } from 'lucide-react'
-import { useTranslation } from 'react-i18next'
 import Button from '@/components/ui/Button'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
-import { useTjmVoice } from '@/hooks/useTjmVoice'
+import { TjmVoiceUserError, useTjmVoice } from '@/hooks/useTjmVoice'
 import { fetchAuthStatus } from '@/lib/auth'
 import { adminReviewActions, selectAdminReviewQuestions } from '@/lib/tjm-admin'
 import {
@@ -72,6 +69,7 @@ import {
   updateTjmOfficialPassingScore,
 } from '@/lib/tjm-api'
 import { TjmCommandLedger } from '@/lib/tjm-command'
+import { TJM_LOCALE, tjmCodeText, tjmText } from '@/i18n/tjm'
 import {
   getTjmResultDisplay,
   hasGrade,
@@ -101,16 +99,18 @@ const inputClass =
   'w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm text-[var(--foreground)] outline-none transition focus:border-[var(--ring)] focus:ring-2 focus:ring-[var(--ring)]/15'
 
 function formatDuration(seconds: number): string {
-  if (seconds < 60) return `${seconds}s`
+  if (seconds < 60) return tjmText('duration.seconds', { seconds })
   const minutes = Math.floor(seconds / 60)
   const remainder = seconds % 60
-  return remainder ? `${minutes}m ${remainder}s` : `${minutes}m`
+  return remainder
+    ? tjmText('duration.minutesSeconds', { minutes, seconds: remainder })
+    : tjmText('duration.minutes', { minutes })
 }
 
 function formatElapsed(milliseconds: number | null): string {
   if (milliseconds === null) return '—'
   const seconds = Math.round(milliseconds / 1000)
-  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`
+  return formatDuration(seconds)
 }
 
 function percent(value: number | null): string {
@@ -118,7 +118,17 @@ function percent(value: number | null): string {
 }
 
 function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : 'An unexpected error occurred.'
+  if (error instanceof TjmApiError) {
+    return tjmText('error.apiRequest', { status: error.status })
+  }
+  if (error instanceof TjmVoiceUserError) return error.message
+  return tjmText('error.unexpected')
+}
+
+function formatTjmDate(value: string): string {
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return value
+  return new Intl.DateTimeFormat('ja-JP').format(parsed)
 }
 
 function sessionCommandStorage(): Storage | undefined {
@@ -221,12 +231,12 @@ function ExamCard({
   const submitTarget = async (event: FormEvent) => {
     event.preventDefault()
     if (targetDraft.trim() === '') {
-      setTargetError('Enter a whole-number target, or use Clear target.')
+      setTargetError(tjmText('exam.target.required'))
       return
     }
     const target = Number(targetDraft)
     if (!Number.isInteger(target) || target < 0 || target > exam.question_count) {
-      setTargetError(`Practice target must be a whole number from 0 to ${exam.question_count}.`)
+      setTargetError(tjmText('exam.target.range', { maximum: exam.question_count }))
       return
     }
     await saveTarget(target)
@@ -239,7 +249,7 @@ function ExamCard({
       <div className="border-b border-[var(--border)] px-5 py-5">
         <div className="mb-3 flex items-center justify-between gap-3">
           <span className="rounded-full border border-[var(--border)] bg-[var(--secondary)] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
-            Rev. {exam.revision}
+            {tjmText('exam.revision', { revision: exam.revision })}
           </span>
           <span className="text-xs text-[var(--muted-foreground)]">{exam.id}</span>
         </div>
@@ -247,19 +257,19 @@ function ExamCard({
           {exam.title}
         </h2>
         <p className="mt-2 min-h-10 text-sm leading-5 text-[var(--muted-foreground)]">
-          {exam.description || 'A deterministic multiple-choice assessment.'}
+          {exam.description || tjmText('exam.defaultDescription')}
         </p>
       </div>
       <dl className="grid grid-cols-2 divide-x divide-y divide-[var(--border)] border-b border-[var(--border)] bg-[var(--secondary)]/45 sm:grid-cols-4 sm:divide-y-0">
         <div className="px-4 py-3">
           <dt className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">
-            Items
+            {tjmText('exam.field.items')}
           </dt>
           <dd className="mt-1 font-mono text-sm font-semibold">{exam.question_count}</dd>
         </div>
         <div className="px-4 py-3">
           <dt className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">
-            Time
+            {tjmText('exam.field.time')}
           </dt>
           <dd className="mt-1 font-mono text-sm font-semibold">
             {formatDuration(exam.duration_seconds)}
@@ -267,7 +277,7 @@ function ExamCard({
         </div>
         <div className="px-4 py-3">
           <dt className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">
-            Official passing score
+            {tjmText('exam.field.officialScore')}
           </dt>
           <dd className="mt-1 font-mono text-sm font-semibold">
             {exam.official_passing_score ?? '—'}
@@ -275,7 +285,7 @@ function ExamCard({
         </div>
         <div className="px-4 py-3">
           <dt className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">
-            Practice target
+            {tjmText('exam.field.practiceTarget')}
           </dt>
           <dd className="mt-1 font-mono text-sm font-semibold">
             {preference?.practice_target_score ?? '—'}
@@ -284,7 +294,7 @@ function ExamCard({
       </dl>
       {exam.official_passing_score_source ? (
         <p className="border-b border-[var(--border)] px-5 py-3 text-xs leading-5 text-[var(--muted-foreground)]">
-          Scoring source:{' '}
+          {tjmText('exam.scoringSource')}{' '}
           {scoringUrl ? (
             <a
               href={scoringUrl}
@@ -301,7 +311,7 @@ function ExamCard({
         </p>
       ) : (
         <p className="border-b border-[var(--border)] px-5 py-3 text-xs text-[var(--muted-foreground)]">
-          Scoring source: Not configured
+          {tjmText('exam.scoringSourceUnset')}
         </p>
       )}
       <form
@@ -309,7 +319,7 @@ function ExamCard({
         className="flex flex-wrap items-end gap-2 border-b border-[var(--border)] px-5 py-4"
       >
         <label className="grid min-w-40 flex-1 gap-1 text-xs font-medium">
-          Personal practice target
+          {tjmText('exam.personalTarget')}
           <input
             type="number"
             min={0}
@@ -323,7 +333,7 @@ function ExamCard({
           />
         </label>
         <Button type="submit" size="sm" variant="secondary" disabled={busy}>
-          Save target
+          {tjmText('exam.target.save')}
         </Button>
         <Button
           type="button"
@@ -336,7 +346,7 @@ function ExamCard({
           }
           onClick={() => void saveTarget(null)}
         >
-          Clear target
+          {tjmText('exam.target.clear')}
         </Button>
         {targetError ? (
           <p role="alert" className="w-full text-xs text-[var(--destructive)]">
@@ -352,7 +362,7 @@ function ExamCard({
           icon={<Sparkles size={15} />}
           onClick={() => onStart(exam, 'practice')}
         >
-          Practice
+          {tjmText('exam.start.practice')}
         </Button>
         <Button
           type="button"
@@ -360,7 +370,7 @@ function ExamCard({
           icon={<TimerReset size={15} />}
           onClick={() => onStart(exam, 'exam')}
         >
-          Timed exam
+          {tjmText('exam.start.timed')}
         </Button>
       </div>
     </article>
@@ -382,9 +392,8 @@ function ExamCards({
 }) {
   if (!exams.length) {
     return (
-      <EmptyPanel icon={ScrollText} title="No active exam is available">
-        An administrator must import, review, and publish enough questions before activating an
-        exam. No sample answer key is bundled with TJM.
+      <EmptyPanel icon={ScrollText} title={tjmText('exam.empty.title')}>
+        {tjmText('exam.empty.body')}
       </EmptyPanel>
     )
   }
@@ -413,8 +422,8 @@ function AttemptResultSummary({ attempt, compact = false }: { attempt: TjmAttemp
   const scoringSource = attempt.result?.official.source ?? null
   const scoringUrl = safeTjmSourceUrl(scoringSource?.url)
   const dimensions = [
-    ['Official result', display.official],
-    ['Personal target result', display.practiceTarget],
+    ['result.dimension.official', display.official],
+    ['result.dimension.practice', display.practiceTarget],
   ] as const
 
   return (
@@ -430,7 +439,7 @@ function AttemptResultSummary({ attempt, compact = false }: { attempt: TjmAttemp
         >
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">
-              {title}
+              {tjmText(title)}
             </span>
             <span
               className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
@@ -441,20 +450,20 @@ function AttemptResultSummary({ attempt, compact = false }: { attempt: TjmAttemp
                     : 'bg-[var(--destructive)]/10 text-[var(--destructive)]'
               }`}
             >
-              {result.label}
+              {tjmText(result.labelKey)}
             </span>
           </div>
           <p className="mt-1 text-[11px] text-[var(--muted-foreground)]">
-            Threshold: {result.threshold ?? '—'}
+            {tjmText('result.threshold', { threshold: result.threshold ?? '—' })}
           </p>
-          {result.reason ? (
+          {result.reasonKey ? (
             <p className="mt-1 text-[11px] leading-4 text-[var(--muted-foreground)]">
-              {result.reason}
+              {tjmText(result.reasonKey)}
             </p>
           ) : null}
-          {title === 'Official result' && scoringSource && !compact ? (
+          {title === 'result.dimension.official' && scoringSource && !compact ? (
             <p className="mt-1 text-[11px] leading-4 text-[var(--muted-foreground)]">
-              Scoring source:{' '}
+              {tjmText('exam.scoringSource')}{' '}
               {scoringUrl ? (
                 <a
                   href={scoringUrl}
@@ -508,15 +517,14 @@ function AttemptDesk({
     new Map<string, Promise<Awaited<ReturnType<typeof openTjmAttemptItem>>>>()
   )
   const voiceTargetRef = useRef<{ attemptId: string; position: number } | null>(null)
-  const commandLedgerRef = useRef<TjmCommandLedger | null>(null)
-  if (!commandLedgerRef.current) {
-    commandLedgerRef.current = new TjmCommandLedger(
-      undefined,
-      sessionCommandStorage(),
-      `deeptutor.tjm.attemptCommands.${attempt.id}`
-    )
-  }
-  const commandLedger = commandLedgerRef.current
+  const [commandLedger] = useState(
+    () =>
+      new TjmCommandLedger(
+        undefined,
+        sessionCommandStorage(),
+        `deeptutor.tjm.attemptCommands.${attempt.id}`
+      )
+  )
   const item = attempt.items[position]
   const finalized = attempt.status !== 'in_progress'
   const resultInvalidated =
@@ -546,10 +554,10 @@ function AttemptDesk({
     [onChange, onFinalize]
   )
   const elapsedMs = () => Math.max(0, Date.now() - (openedAtRef.current[position] ?? Date.now()))
-  const voice = useTjmVoice(async transcript => {
+  const voice = useTjmVoice(async (transcript, signal) => {
     const target = voiceTargetRef.current
     if (!target || target.attemptId !== attempt.id || target.position !== position) {
-      throw new Error('The question changed before transcription finished. No answer was saved.')
+      throw new TjmVoiceUserError(tjmText('voice.questionChanged'))
     }
     const targetScope = `${target.attemptId}:${target.position}`
     const scope = `voice-candidate:${targetScope}:${transcript}`
@@ -563,8 +571,10 @@ function AttemptDesk({
       command.payload.position,
       command.payload.transcript,
       command.payload.elapsedMs,
-      command.key
+      command.key,
+      signal
     )
+    if (signal.aborted) return
     commandLedger.complete(scope, command.key)
     voiceTargetRef.current = null
     if (candidate.proposed_option_key === null) {
@@ -578,34 +588,35 @@ function AttemptDesk({
           attempt.id,
           cancelCommand.payload.position,
           cancelCommand.payload.candidateId,
-          cancelCommand.key
+          cancelCommand.key,
+          signal
         )
+        if (signal.aborted) return
         commandLedger.complete(cancelScope, cancelCommand.key)
       } catch (reason) {
+        if (signal.aborted) return
         setVoiceCandidate(candidate)
-        throw new Error(
-          `The speech did not map to a choice, and discarding it failed. Retry dismissal. ${messageOf(reason)}`
+        throw new TjmVoiceUserError(
+          tjmText('voice.discardFailed', { message: messageOf(reason) })
         )
       }
-      throw new Error(
-        `I heard “${candidate.transcript}”, but could not map it to one choice. Please try again or answer on screen.`
+      throw new TjmVoiceUserError(
+        tjmText('voice.noChoice', { transcript: candidate.transcript })
       )
     }
     setVoiceCandidate(candidate)
   })
-  const { stopListening, stopSpeaking } = voice
+  const { cancelTranscription, stopListening, stopSpeaking } = voice
   const interactionBusy =
     actionBusy || busy || voice.state !== 'idle' || voiceCandidate !== null || submitOpen
   const navigationLocked = !canNavigateTjmAttempt(attempt.status, serverOpened, interactionBusy)
 
   useEffect(() => {
-    setPosition(current => Math.min(current, Math.max(0, attempt.items.length - 1)))
-  }, [attempt.items.length])
-
-  useEffect(() => {
     if (!(position in openedAtRef.current)) openedAtRef.current[position] = Date.now()
   }, [position])
 
+  // These effects synchronize server presentation, VAD, and deadline resources
+  // with attempt transitions. Their state resets are intentional teardown work.
   useEffect(() => {
     if (
       !item ||
@@ -641,12 +652,16 @@ function AttemptDesk({
             return
           } catch (refreshError) {
             if (active) {
-              setError(`${messageOf(reason)} Refresh also failed: ${messageOf(refreshError)}`)
+              setError(
+                tjmText('error.refreshAlsoFailed', {
+                  message: `${messageOf(reason)} ${messageOf(refreshError)}`,
+                })
+              )
             }
             return
           }
         }
-        setError(`Question timing could not start. ${messageOf(reason)}`)
+        setError(tjmText('attempt.timing.startFailed', { message: messageOf(reason) }))
       })
       .finally(() => {
         if (active) setOpeningItems(current => ({ ...current, [itemScope]: false }))
@@ -659,15 +674,17 @@ function AttemptDesk({
   useEffect(() => {
     setVoiceCandidate(null)
     voiceTargetRef.current = null
+    cancelTranscription()
     void stopListening().catch(reason => setError(messageOf(reason)))
-  }, [position, stopListening])
+  }, [cancelTranscription, position, stopListening])
 
   useEffect(() => {
     if (item?.grading_status === 'eligible') return
     voiceTargetRef.current = null
     setVoiceCandidate(null)
+    cancelTranscription()
     void stopListening().catch(reason => setError(messageOf(reason)))
-  }, [item?.grading_status, stopListening])
+  }, [cancelTranscription, item?.grading_status, stopListening])
 
   useEffect(() => {
     if (!finalized) return
@@ -675,9 +692,10 @@ function AttemptDesk({
     voiceTargetRef.current = null
     setVoiceCandidate(null)
     setSubmitOpen(false)
+    cancelTranscription()
     void stopListening().catch(reason => setError(messageOf(reason)))
     stopSpeaking()
-  }, [commandLedger, finalized, stopListening, stopSpeaking])
+  }, [cancelTranscription, commandLedger, finalized, stopListening, stopSpeaking])
 
   useEffect(() => {
     if (attempt.mode !== 'exam' || !attempt.deadline_at || finalized) {
@@ -691,7 +709,6 @@ function AttemptDesk({
     const timer = window.setInterval(update, 1000)
     return () => window.clearInterval(timer)
   }, [attempt.deadline_at, attempt.mode, finalized])
-
   useEffect(() => {
     if (!shouldRefreshExpiredTjmAttempt(attempt.status, attempt.mode, secondsLeft)) return
     const expiryKey = `${attempt.id}:${attempt.deadline_at ?? ''}`
@@ -703,12 +720,13 @@ function AttemptDesk({
       voiceTargetRef.current = null
       setVoiceCandidate(null)
       setSubmitOpen(false)
+      cancelTranscription()
       try {
         await stopListening()
       } catch (reason) {
         if (active) {
           setError(
-            `Microphone shutdown failed; deadline finalization continued. ${messageOf(reason)}`
+            tjmText('voice.microphoneDeadlineWarning', { message: messageOf(reason) })
           )
         }
       }
@@ -725,7 +743,7 @@ function AttemptDesk({
       } catch (reason) {
         if (!active) return
         setError(
-          `The deadline was reached, but final status could not be refreshed. ${messageOf(reason)}`
+          tjmText('voice.deadlineRefreshFailed', { message: messageOf(reason) })
         )
         expiryRefreshRef.current = null
         retryTimer = window.setTimeout(() => setExpiryPoll(value => value + 1), 2000)
@@ -742,6 +760,7 @@ function AttemptDesk({
     attempt.mode,
     attempt.status,
     applyAttempt,
+    cancelTranscription,
     expiryPoll,
     finalized,
     secondsLeft,
@@ -777,8 +796,8 @@ function AttemptDesk({
 
   if (!item) {
     return (
-      <EmptyPanel icon={CircleAlert} title="This attempt has no question items">
-        Exit the attempt and ask an administrator to verify the active exam blueprint.
+      <EmptyPanel icon={CircleAlert} title={tjmText('attempt.empty.title')}>
+        {tjmText('attempt.empty.body')}
       </EmptyPanel>
     )
   }
@@ -799,11 +818,25 @@ function AttemptDesk({
       const updated = await getTjmAttempt(attempt.id)
       applyAttempt(updated)
     } catch (refreshError) {
-      setError(`${messageOf(reason)} Refresh also failed: ${messageOf(refreshError)}`)
+      setError(
+        tjmText('error.refreshAlsoFailed', {
+          message: `${messageOf(reason)} ${messageOf(refreshError)}`,
+        })
+      )
     }
   }
 
   const toggleVoiceCapture = async () => {
+    if (voice.state === 'loading') {
+      voiceTargetRef.current = null
+      voice.cancelListeningStart()
+      return
+    }
+    if (voice.state === 'transcribing') {
+      voiceTargetRef.current = null
+      voice.cancelTranscription()
+      return
+    }
     if (voice.state === 'listening' || voice.state === 'speech') {
       voiceTargetRef.current = null
       try {
@@ -876,10 +909,11 @@ function AttemptDesk({
     const scope = `submit:${attempt.id}`
     const command = commandLedger.begin(scope, () => ({}))
     try {
+      voice.cancelTranscription()
       try {
         await voice.stopListening()
       } catch (reason) {
-        setError(`Microphone shutdown failed; submission continued. ${messageOf(reason)}`)
+        setError(tjmText('voice.microphoneSubmitWarning', { message: messageOf(reason) }))
       }
       voice.stopSpeaking()
       const result = await submitTjmAttempt(attempt.id, command.key)
@@ -961,8 +995,11 @@ function AttemptDesk({
 
   const questionSpeech = [
     item.stem,
-    ...item.choices.map((choice, index) => `${index + 1}番。${choice.text}`),
+    ...item.choices.map((choice, index) =>
+      tjmText('voice.optionSpeech', { number: index + 1, text: choice.text })
+    ),
   ].join('\n')
+  const readingActive = voice.state === 'synthesizing' || voice.state === 'speaking'
 
   return (
     <div className="grid min-h-[calc(100dvh-12rem)] gap-4 xl:grid-cols-[minmax(0,1fr)_270px]">
@@ -970,13 +1007,16 @@ function AttemptDesk({
         <header className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] bg-[var(--secondary)]/35 px-5 py-3">
           <div className="flex min-w-0 items-center gap-3">
             <span className="rounded-md border border-[var(--border)] bg-[var(--background)] px-2 py-1 font-mono text-[11px] font-semibold uppercase tracking-wider">
-              {attempt.mode.replace('_', ' ')}
+              {tjmCodeText('attempt.mode', attempt.mode)}
             </span>
             <span className="truncate text-sm font-medium">{attempt.exam_snapshot.title}</span>
           </div>
           <div className="flex items-center gap-4 font-mono text-xs tabular-nums">
             <span>
-              {attempt.answered_count}/{attempt.items.length} answered
+              {tjmText('attempt.progress', {
+                answered: attempt.answered_count,
+                total: attempt.items.length,
+              })}
             </span>
             {secondsLeft !== null ? (
               <span
@@ -993,15 +1033,15 @@ function AttemptDesk({
           <div className="mb-5 flex items-start justify-between gap-4">
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--muted-foreground)]">
-                Question {position + 1} · {item.area}
+                {tjmText('attempt.questionHeading', { number: position + 1, area: item.area })}
               </p>
               <h1 className="mt-3 max-w-3xl font-serif text-[21px] font-semibold leading-[1.55] tracking-[-0.01em] text-[var(--foreground)] sm:text-[24px]">
-                {serverOpened ? item.stem : 'Starting server-side question timing…'}
+                {serverOpened ? item.stem : tjmText('attempt.questionOpening')}
               </h1>
             </div>
             {isConfirmed ? (
               <span className="flex shrink-0 items-center gap-1 rounded-full bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-700 dark:text-emerald-300">
-                <Check size={13} /> Confirmed
+                <Check size={13} /> {tjmText('attempt.confirmed')}
               </span>
             ) : null}
           </div>
@@ -1010,31 +1050,49 @@ function AttemptDesk({
             <Button
               type="button"
               variant="ghost"
-              disabled={!serverOpened || (deadlineReached && !finalized)}
-              icon={voice.state === 'speaking' ? <VolumeX size={15} /> : <Volume2 size={15} />}
+              disabled={
+                !serverOpened ||
+                (deadlineReached && !finalized) ||
+                voice.state === 'loading' ||
+                voice.state === 'transcribing'
+              }
+              icon={readingActive ? <VolumeX size={15} /> : <Volume2 size={15} />}
               onClick={() =>
-                voice.state === 'speaking' ? voice.stopSpeaking() : void voice.speak(questionSpeech)
+                readingActive ? voice.stopSpeaking() : void voice.speak(questionSpeech)
               }
             >
-              {voice.state === 'speaking' ? 'Stop reading' : 'Read question'}
+              {readingActive
+                ? tjmText('attempt.read.stop')
+                : tjmText('attempt.read.start')}
             </Button>
             {hasGrade(item) ? (
               <Button
                 type="button"
                 variant="ghost"
+                disabled={voice.state !== 'idle'}
                 icon={<Volume2 size={15} />}
                 onClick={() =>
                   void voice.speak(
-                    `${item.is_correct ? 'Correct.' : `Correct answer: ${item.correct_option_key}.`} ${item.explanation}`
+                    `${
+                      item.is_correct
+                        ? tjmText('attempt.speech.correct')
+                        : tjmText('attempt.speech.correctAnswer', {
+                            option: item.correct_option_key,
+                          })
+                    } ${item.explanation}`
                   )
                 }
               >
-                Read result
+                {tjmText('attempt.read.result')}
               </Button>
             ) : null}
           </div>
 
-          <div className="grid gap-2.5" role="radiogroup" aria-label="Answer choices">
+          <div
+            className="grid gap-2.5"
+            role="radiogroup"
+            aria-label={tjmText('aria.answerChoices')}
+          >
             {serverOpened
               ? item.choices.map((choice, index) => {
                   const chosen = choice.key === selectedKey
@@ -1087,7 +1145,7 @@ function AttemptDesk({
                   htmlFor={`confidence-${position}`}
                   className="font-medium text-[var(--foreground)]"
                 >
-                  Confidence before seeing the result
+                  {tjmText('attempt.confidence.label')}
                 </label>
                 <span className="font-mono font-semibold tabular-nums">{confidenceValue}%</span>
               </div>
@@ -1109,8 +1167,8 @@ function AttemptDesk({
                 className="w-full accent-[var(--foreground)]"
               />
               <div className="mt-1 flex justify-between text-[10px] text-[var(--muted-foreground)]">
-                <span>Guessing</span>
-                <span>Certain</span>
+                <span>{tjmText('attempt.confidence.guessing')}</span>
+                <span>{tjmText('attempt.confidence.certain')}</span>
               </div>
             </div>
           ) : null}
@@ -1122,7 +1180,10 @@ function AttemptDesk({
             >
               <Lightbulb size={17} className="mt-0.5 shrink-0 text-amber-600" />
               <div>
-                <strong className="font-medium">Hint {index + 1}.</strong> {hint}
+                <strong className="font-medium">
+                  {tjmText('attempt.hint.number', { number: index + 1 })}
+                </strong>{' '}
+                {hint}
               </div>
             </div>
           ))}
@@ -1132,10 +1193,14 @@ function AttemptDesk({
               className={`mt-5 rounded-xl border p-4 ${item.is_correct ? 'border-emerald-500/25 bg-emerald-500/8' : 'border-[var(--destructive)]/25 bg-[var(--destructive)]/5'}`}
             >
               <p className="text-sm font-semibold">
-                {item.is_correct ? 'Correct' : `Correct answer: ${item.correct_option_key}`}
+                {item.is_correct
+                  ? tjmText('attempt.result.correct')
+                  : tjmText('attempt.result.correctAnswer', {
+                      option: item.correct_option_key,
+                    })}
               </p>
               <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                {item.explanation || 'No explanation was supplied for this reviewed version.'}
+                {item.explanation || tjmText('attempt.result.noExplanation')}
               </p>
             </div>
           ) : null}
@@ -1145,8 +1210,7 @@ function AttemptDesk({
               role="status"
               className="mt-5 rounded-xl border border-amber-500/25 bg-amber-500/8 p-4 text-sm leading-6"
             >
-              This question version was invalidated and is excluded from scoring and learning
-              analytics. Its historical answer events remain in the audit record.
+              {tjmText('attempt.contentInvalidated')}
             </div>
           ) : null}
 
@@ -1162,19 +1226,19 @@ function AttemptDesk({
             <div className="mt-4 flex items-center gap-3 rounded-xl border border-amber-500/25 bg-amber-500/8 px-4 py-3 text-sm">
               {openingItems[itemScope] ? (
                 <>
-                  <Loader2 size={16} className="animate-spin" /> Starting server-side question
-                  timing…
+                  <Loader2 size={16} className="animate-spin" />
+                  {tjmText('attempt.timing.starting')}
                 </>
               ) : (
                 <>
-                  <span>Question timing is not active, so answers remain disabled.</span>
+                  <span>{tjmText('attempt.timing.disabled')}</span>
                   <Button
                     type="button"
                     size="sm"
                     variant="ghost"
                     onClick={() => setOpenRetry(value => value + 1)}
                   >
-                    Retry
+                    {tjmText('common.retry')}
                   </Button>
                 </>
               )}
@@ -1193,7 +1257,7 @@ function AttemptDesk({
                 icon={<Lightbulb size={15} />}
                 onClick={revealHint}
               >
-                Hint
+                {tjmText('attempt.hint.action')}
               </Button>
             ) : null}
             {canAnswer ? (
@@ -1201,19 +1265,24 @@ function AttemptDesk({
                 type="button"
                 variant="ghost"
                 disabled={
-                  actionBusy || busy || !['idle', 'listening', 'speech'].includes(voice.state)
+                  actionBusy ||
+                  busy ||
+                  !['idle', 'loading', 'listening', 'speech', 'transcribing'].includes(
+                    voice.state
+                  )
                 }
-                loading={voice.state === 'loading' || voice.state === 'transcribing'}
                 icon={<Mic size={15} />}
                 onClick={() => void toggleVoiceCapture()}
               >
                 {voice.state === 'speech'
-                  ? 'Hearing speech…'
+                  ? tjmText('attempt.voice.hearing')
+                  : voice.state === 'loading'
+                    ? tjmText('attempt.voice.cancelStart')
                   : voice.state === 'listening'
-                    ? 'Stop microphone'
+                    ? tjmText('attempt.voice.stopMicrophone')
                     : voice.state === 'transcribing'
-                      ? 'Transcribing…'
-                      : 'Answer by voice'}
+                      ? tjmText('attempt.voice.cancelTranscription')
+                      : tjmText('attempt.voice.answer')}
               </Button>
             ) : null}
             {canAnswer ? (
@@ -1224,7 +1293,9 @@ function AttemptDesk({
                 icon={<LockKeyhole size={15} />}
                 onClick={confirmAnswer}
               >
-                {isConfirmed && attempt.mode === 'exam' ? 'Change answer' : 'Confirm answer'}
+                {isConfirmed && attempt.mode === 'exam'
+                  ? tjmText('attempt.answer.change')
+                  : tjmText('attempt.answer.confirm')}
               </Button>
             ) : null}
           </div>
@@ -1236,7 +1307,7 @@ function AttemptDesk({
               icon={<ChevronLeft size={15} />}
               onClick={() => setPosition(value => value - 1)}
             >
-              Previous
+              {tjmText('attempt.previous')}
             </Button>
             {position < attempt.items.length - 1 ? (
               <Button
@@ -1246,11 +1317,11 @@ function AttemptDesk({
                 icon={<ChevronRight size={15} />}
                 onClick={() => setPosition(value => value + 1)}
               >
-                Next
+                {tjmText('attempt.next')}
               </Button>
             ) : finalized ? (
               <Button type="button" variant="secondary" onClick={onExit}>
-                Back to exams
+                {tjmText('attempt.backToExams')}
               </Button>
             ) : (
               <Button
@@ -1260,7 +1331,9 @@ function AttemptDesk({
                 icon={<FileCheck2 size={15} />}
                 onClick={() => setSubmitOpen(true)}
               >
-                Submit {attempt.mode === 'exam' ? 'exam' : 'session'}
+                {attempt.mode === 'exam'
+                  ? tjmText('attempt.submit.exam')
+                  : tjmText('attempt.submit.session')}
               </Button>
             )}
           </div>
@@ -1271,7 +1344,7 @@ function AttemptDesk({
         {finalized ? (
           <div className="border-b border-[var(--border)] bg-[var(--foreground)] px-5 py-5 text-[var(--background)]">
             <p className="text-[10px] uppercase tracking-[0.16em] opacity-65">
-              {resultInvalidated ? 'Historical raw score' : 'Final result'}
+              {resultInvalidated ? tjmText('result.rawScore') : tjmText('result.finalScore')}
             </p>
             <p className="mt-2 font-serif text-3xl font-semibold tabular-nums">
               {attempt.correct_count ?? 0}
@@ -1282,8 +1355,10 @@ function AttemptDesk({
             {resultInvalidated ? (
               <p className="mt-2 text-xs leading-5 opacity-75">
                 {attempt.content_invalidated_count > 0
-                  ? `Content invalidated: ${attempt.content_invalidated_count} question version${attempt.content_invalidated_count === 1 ? '' : 's'} no longer counts as an official learning result.`
-                  : 'Content invalidated: the result scope is no longer eligible for an official or personal target result.'}
+                  ? tjmText('result.invalidatedCount', {
+                      count: attempt.content_invalidated_count,
+                    })
+                  : tjmText('result.invalidatedScope')}
               </p>
             ) : null}
           </div>
@@ -1291,7 +1366,7 @@ function AttemptDesk({
         {finalized ? <AttemptResultSummary attempt={attempt} /> : null}
         <div className="p-4">
           <p className="mb-3 text-[10px] font-semibold uppercase tracking-[0.15em] text-[var(--muted-foreground)]">
-            Answer sheet
+            {tjmText('attempt.answerSheet')}
           </p>
           <div className="grid grid-cols-5 gap-2">
             {attempt.items.map(entry => (
@@ -1300,7 +1375,11 @@ function AttemptDesk({
                 type="button"
                 disabled={navigationLocked}
                 onClick={() => setPosition(entry.position)}
-                aria-label={`Question ${entry.position + 1}${entry.confirmed_option_key ? ', answered' : ''}`}
+                aria-label={
+                  entry.confirmed_option_key
+                    ? tjmText('aria.questionAnswered', { number: entry.position + 1 })
+                    : tjmText('aria.question', { number: entry.position + 1 })
+                }
                 className={`aspect-square rounded-lg border font-mono text-xs font-semibold transition ${
                   position === entry.position
                     ? 'border-[var(--foreground)] bg-[var(--foreground)] text-[var(--background)]'
@@ -1315,10 +1394,10 @@ function AttemptDesk({
           </div>
           <div className="mt-4 border-t border-[var(--border)] pt-4 text-xs leading-5 text-[var(--muted-foreground)]">
             <p>
-              <kbd className="font-mono">1–9</kbd> selects an option.
+              {tjmText('attempt.keyboard.select')}
             </p>
             <p>
-              <kbd className="font-mono">← →</kbd> moves between questions.
+              {tjmText('attempt.keyboard.navigate')}
             </p>
           </div>
           {!finalized ? (
@@ -1328,7 +1407,7 @@ function AttemptDesk({
               onClick={onExit}
               className="mt-4 text-xs text-[var(--muted-foreground)] underline-offset-4 hover:text-[var(--foreground)] hover:underline"
             >
-              Leave and resume later
+              {tjmText('attempt.leave')}
             </button>
           ) : null}
         </div>
@@ -1338,12 +1417,18 @@ function AttemptDesk({
         open={voiceCandidate !== null}
         title={
           voiceCandidate?.proposed_option_key === null
-            ? 'Voice answer not recognized'
-            : 'Confirm voice answer'
+            ? tjmText('attempt.voice.unrecognizedTitle')
+            : tjmText('attempt.voice.confirmTitle')
         }
-        confirmLabel={voiceCandidate?.proposed_option_key === null ? 'Dismiss' : 'Confirm answer'}
+        confirmLabel={
+          voiceCandidate?.proposed_option_key === null
+            ? tjmText('common.dismiss')
+            : tjmText('attempt.answer.confirm')
+        }
+        cancelLabel={tjmText('common.cancel')}
+        closeLabel={tjmText('common.close')}
         busy={actionBusy}
-        busyLabel="Saving…"
+        busyLabel={tjmText('common.saving')}
         onConfirm={() =>
           void (voiceCandidate?.proposed_option_key === null
             ? cancelVoiceAnswer()
@@ -1353,23 +1438,33 @@ function AttemptDesk({
       >
         {voiceCandidate
           ? voiceCandidate.proposed_option_key === null
-            ? `I heard “${voiceCandidate.transcript}”, but it did not map to one choice. Dismissal is retried with the same command key.`
-            : `I heard “${voiceCandidate.transcript}”. Confirm option ${voiceCandidate.proposed_option_key}? The answer is saved only after this confirmation.`
+            ? tjmText('voice.unrecognizedCandidate', {
+                transcript: voiceCandidate.transcript,
+              })
+            : tjmText('voice.confirmCandidate', {
+                transcript: voiceCandidate.transcript,
+                option: voiceCandidate.proposed_option_key,
+              })
           : ''}
       </ConfirmDialog>
 
       <ConfirmDialog
         open={submitOpen}
-        title="Finalize this attempt?"
-        confirmLabel="Finalize"
+        title={tjmText('attempt.finalize.title')}
+        confirmLabel={tjmText('attempt.finalize.action')}
+        cancelLabel={tjmText('common.cancel')}
+        closeLabel={tjmText('common.close')}
         busy={actionBusy}
-        busyLabel="Grading…"
+        busyLabel={tjmText('common.grading')}
         onConfirm={() => void finalize()}
         onCancel={() => setSubmitOpen(false)}
       >
         {attempt.mode === 'exam'
-          ? `${attempt.answered_count} of ${attempt.items.length} answers are confirmed. Official answers and explanations appear only after server-side submission.`
-          : 'The server will grade confirmed answers deterministically and update your review queue.'}
+          ? tjmText('attempt.finalize.examBody', {
+              answered: attempt.answered_count,
+              total: attempt.items.length,
+            })
+          : tjmText('attempt.finalize.practiceBody')}
       </ConfirmDialog>
     </div>
   )
@@ -1398,14 +1493,16 @@ function ReviewPanel({
     <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
       <section className={`${panelClass} overflow-hidden`}>
         <div className="border-b border-[var(--border)] px-5 py-4">
-          <h2 className="font-serif text-lg font-semibold">Review ledger</h2>
+          <h2 className="font-serif text-lg font-semibold">
+            {tjmText('review.ledger.title')}
+          </h2>
           <p className="mt-1 text-sm text-[var(--muted-foreground)]">
-            Each reason remains explicit; one item may carry several review signals.
+            {tjmText('review.ledger.description')}
           </p>
         </div>
         {!queue.length ? (
           <div className="px-5 py-12 text-center text-sm text-[var(--muted-foreground)]">
-            No review items are pending.
+            {tjmText('review.empty')}
           </div>
         ) : (
           <div className="divide-y divide-[var(--border)]">
@@ -1417,7 +1514,7 @@ function ReviewPanel({
                       {exams.find(exam => exam.id === examId)?.title ?? examId}
                     </p>
                     <p className="text-xs text-[var(--muted-foreground)]">
-                      {items.length} question version{items.length === 1 ? '' : 's'}
+                      {tjmText('review.questionCount', { count: items.length })}
                     </p>
                   </div>
                   <Button
@@ -1427,7 +1524,7 @@ function ReviewPanel({
                     icon={<RotateCcw size={14} />}
                     onClick={() => onStart(examId)}
                   >
-                    Start review
+                    {tjmText('review.start')}
                   </Button>
                 </div>
                 <div className="grid gap-2">
@@ -1440,7 +1537,9 @@ function ReviewPanel({
                         <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">
                           {item.area} · {item.stable_id}
                         </span>
-                        <span className="font-mono text-[10px]">P{item.priority}</span>
+                        <span className="font-mono text-[10px]">
+                          {tjmText('review.priority', { priority: item.priority })}
+                        </span>
                       </div>
                       <p className="mt-1.5 line-clamp-2 text-sm leading-5">{item.stem}</p>
                       <div className="mt-2 flex flex-wrap gap-1.5">
@@ -1449,7 +1548,7 @@ function ReviewPanel({
                             key={reason}
                             className="rounded-full bg-[var(--accent)] px-2 py-0.5 text-[10px]"
                           >
-                            {reason.replaceAll('_', ' ')}
+                            {tjmCodeText('review.reason', reason)}
                           </span>
                         ))}
                       </div>
@@ -1463,11 +1562,13 @@ function ReviewPanel({
       </section>
       <section className={`${panelClass} h-fit overflow-hidden`}>
         <div className="border-b border-[var(--border)] px-5 py-4">
-          <h2 className="font-serif text-lg font-semibold">Recent attempts</h2>
+          <h2 className="font-serif text-lg font-semibold">
+            {tjmText('review.recent.title')}
+          </h2>
         </div>
         {!history.length ? (
           <p className="px-5 py-8 text-sm text-[var(--muted-foreground)]">
-            No attempt history yet.
+            {tjmText('review.recent.empty')}
           </p>
         ) : (
           <div className="divide-y divide-[var(--border)]">
@@ -1477,7 +1578,8 @@ function ReviewPanel({
                   <div className="min-w-0">
                     <p className="truncate text-sm font-medium">{attempt.exam_snapshot.title}</p>
                     <p className="mt-0.5 text-[11px] text-[var(--muted-foreground)]">
-                      {attempt.mode} · {new Date(attempt.started_at).toLocaleDateString()}
+                      {tjmCodeText('attempt.mode', attempt.mode)}・
+                      {formatTjmDate(attempt.started_at)}
                     </p>
                   </div>
                   <span className="font-mono text-sm font-semibold tabular-nums">
@@ -1488,7 +1590,7 @@ function ReviewPanel({
                 {attempt.content_invalidated_count > 0 ||
                 attempt.result?.validity === 'content_invalidated' ? (
                   <span className="rounded-full bg-amber-500/10 px-2 py-1 text-[10px] font-semibold text-amber-700 dark:text-amber-300">
-                    Content invalidated · raw score retained
+                    {tjmText('review.invalidatedBadge')}
                   </span>
                 ) : null}
               </div>
@@ -1503,27 +1605,39 @@ function ReviewPanel({
 function InsightsPanel({ analytics }: { analytics: TjmAnalytics | null }) {
   if (!analytics || analytics.overall.total === 0) {
     return (
-      <EmptyPanel icon={BarChart3} title="Analysis begins after the first submission">
-        Accuracy, response time, confidence calibration, hint use, topic breakdowns, and attempt
-        trends use finalized server history only.
+      <EmptyPanel icon={BarChart3} title={tjmText('analytics.empty.title')}>
+        {tjmText('analytics.empty.body')}
       </EmptyPanel>
     )
   }
   const cards = [
     [
-      'Accuracy',
+      tjmText('analytics.card.accuracy'),
       percent(analytics.overall.accuracy),
-      `${analytics.overall.correct}/${analytics.overall.total} items`,
+      tjmText('analytics.card.accuracyNote', {
+        correct: analytics.overall.correct,
+        total: analytics.overall.total,
+      }),
       Gauge,
     ],
     [
-      'Response time',
+      tjmText('analytics.card.responseTime'),
       formatElapsed(analytics.overall.average_elapsed_ms),
-      'average confirmed answer',
+      tjmText('analytics.card.responseTimeNote'),
       Clock3,
     ],
-    ['Hint use', percent(analytics.overall.hint_use_rate), 'of finalized items', Lightbulb],
-    ['Attempts', String(analytics.trend.length), 'submitted or expired', History],
+    [
+      tjmText('analytics.card.hintUse'),
+      percent(analytics.overall.hint_use_rate),
+      tjmText('analytics.card.hintUseNote'),
+      Lightbulb,
+    ],
+    [
+      tjmText('analytics.card.attempts'),
+      String(analytics.trend.length),
+      tjmText('analytics.card.attemptsNote'),
+      History,
+    ],
   ] as const
   return (
     <div className="space-y-4">
@@ -1544,7 +1658,9 @@ function InsightsPanel({ analytics }: { analytics: TjmAnalytics | null }) {
       <div className="grid gap-4 xl:grid-cols-2">
         <section className={`${panelClass} overflow-hidden`}>
           <div className="border-b border-[var(--border)] px-5 py-4">
-            <h2 className="font-serif text-lg font-semibold">Accuracy by area</h2>
+            <h2 className="font-serif text-lg font-semibold">
+              {tjmText('analytics.area.title')}
+            </h2>
           </div>
           <div className="space-y-4 p-5">
             {Object.entries(analytics.by_area).map(([area, metric]) => (
@@ -1567,19 +1683,21 @@ function InsightsPanel({ analytics }: { analytics: TjmAnalytics | null }) {
         </section>
         <section className={`${panelClass} overflow-hidden`}>
           <div className="border-b border-[var(--border)] px-5 py-4">
-            <h2 className="font-serif text-lg font-semibold">Confidence calibration</h2>
+            <h2 className="font-serif text-lg font-semibold">
+              {tjmText('analytics.confidence.title')}
+            </h2>
           </div>
           <div className="grid grid-cols-3 divide-x divide-[var(--border)] p-5">
             {Object.entries(analytics.confidence).map(([band, metric]) => (
               <div key={band} className="px-3 text-center first:pl-0 last:pr-0">
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">
-                  {band}
+                  {tjmCodeText('analytics.confidence', band)}
                 </p>
                 <p className="mt-2 font-serif text-2xl font-semibold tabular-nums">
                   {percent(metric.accuracy)}
                 </p>
                 <p className="mt-1 text-[10px] text-[var(--muted-foreground)]">
-                  {metric.answered} answered
+                  {tjmText('analytics.confidence.answered', { count: metric.answered })}
                 </p>
               </div>
             ))}
@@ -1612,7 +1730,7 @@ function QuestionEditor({
       className="fixed inset-0 z-50 overflow-y-auto bg-[var(--overlay)] px-4 py-8"
       role="dialog"
       aria-modal="true"
-      aria-label="Edit draft question"
+      aria-label={tjmText('admin.editor.aria')}
     >
       <form
         className="mx-auto w-full max-w-2xl rounded-[20px] border border-[var(--border)] bg-[var(--card)] p-5 shadow-2xl sm:p-7"
@@ -1637,17 +1755,22 @@ function QuestionEditor({
         <div className="mb-5 flex items-start justify-between gap-4">
           <div>
             <p className="text-[10px] uppercase tracking-[0.15em] text-[var(--muted-foreground)]">
-              {question.stable_id} · version {question.version}
+              {tjmText('admin.editor.version', {
+                stableId: question.stable_id,
+                version: question.version,
+              })}
             </p>
-            <h2 className="mt-1 font-serif text-xl font-semibold">Edit draft</h2>
+            <h2 className="mt-1 font-serif text-xl font-semibold">
+              {tjmText('admin.editor.title')}
+            </h2>
           </div>
           <Button type="button" variant="ghost" size="sm" onClick={onClose}>
-            Close
+            {tjmText('common.close')}
           </Button>
         </div>
         <div className="grid gap-4">
           <label className="grid gap-1.5 text-xs font-medium">
-            Question stem
+            {tjmText('admin.editor.stem')}
             <textarea
               required
               value={stem}
@@ -1657,7 +1780,7 @@ function QuestionEditor({
             />
           </label>
           <label className="grid gap-1.5 text-xs font-medium">
-            Area
+            {tjmText('admin.editor.area')}
             <input
               required
               value={area}
@@ -1666,7 +1789,9 @@ function QuestionEditor({
             />
           </label>
           <fieldset className="grid gap-2">
-            <legend className="mb-1 text-xs font-medium">Choices and official answer</legend>
+            <legend className="mb-1 text-xs font-medium">
+              {tjmText('admin.editor.choices')}
+            </legend>
             {choices.map((choice, index) => (
               <div key={choice.key} className="grid grid-cols-[auto_1fr] items-center gap-2">
                 <label className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg border border-[var(--border)] font-mono text-xs">
@@ -1676,6 +1801,7 @@ function QuestionEditor({
                     value={choice.key}
                     checked={correct === choice.key}
                     onChange={() => setCorrect(choice.key)}
+                    aria-label={tjmText('aria.correctChoice', { option: choice.key })}
                     className="sr-only"
                   />
                   {correct === choice.key ? <Check size={15} /> : choice.key}
@@ -1696,7 +1822,7 @@ function QuestionEditor({
             ))}
           </fieldset>
           <label className="grid gap-1.5 text-xs font-medium">
-            Explanation
+            {tjmText('admin.editor.explanation')}
             <textarea
               value={explanation}
               onChange={event => setExplanation(event.target.value)}
@@ -1705,7 +1831,10 @@ function QuestionEditor({
             />
           </label>
           <label className="grid gap-1.5 text-xs font-medium">
-            Hints <span className="font-normal text-[var(--muted-foreground)]">One per line</span>
+            {tjmText('admin.editor.hints')}{' '}
+            <span className="font-normal text-[var(--muted-foreground)]">
+              {tjmText('admin.editor.onePerLine')}
+            </span>
             <textarea
               value={hints}
               onChange={event => setHints(event.target.value)}
@@ -1716,10 +1845,10 @@ function QuestionEditor({
         </div>
         <div className="mt-6 flex justify-end gap-2">
           <Button type="button" variant="ghost" onClick={onClose}>
-            Cancel
+            {tjmText('common.cancel')}
           </Button>
           <Button type="submit" loading={busy}>
-            Save reviewed draft
+            {tjmText('admin.editor.save')}
           </Button>
         </div>
       </form>
@@ -1762,16 +1891,16 @@ function OfficialPassingScoreEditor({
 
     const threshold = Number(score)
     if (!Number.isInteger(threshold) || threshold < 0 || threshold > exam.question_count) {
-      setError(`Official score must be a whole number from 0 to ${exam.question_count}.`)
+      setError(tjmText('admin.score.rangeError', { maximum: exam.question_count }))
       return
     }
     if (!sourceTitle.trim() || !publisher.trim()) {
-      setError('Source title and publisher are required for an official passing score.')
+      setError(tjmText('admin.score.sourceRequired'))
       return
     }
     const normalizedUrl = url.trim() ? safeTjmSourceUrl(url.trim()) : null
     if (url.trim() && normalizedUrl === null) {
-      setError('Source URL must be an absolute HTTP or HTTPS URL.')
+      setError(tjmText('admin.score.urlError'))
       return
     }
 
@@ -1793,7 +1922,7 @@ function OfficialPassingScoreEditor({
       className="mt-3 grid gap-2 rounded-xl border border-[var(--border)] bg-[var(--secondary)]/25 p-3 sm:grid-cols-2"
     >
       <label className="grid gap-1 text-[11px] font-medium">
-        Official passing score
+        {tjmText('admin.score.label')}
         <input
           type="number"
           min={0}
@@ -1803,11 +1932,11 @@ function OfficialPassingScoreEditor({
           disabled={busy}
           onChange={event => setScore(event.target.value)}
           className={inputClass}
-          placeholder="Not configured"
+          placeholder={tjmText('common.notConfigured')}
         />
       </label>
       <label className="grid gap-1 text-[11px] font-medium">
-        Scoring source title
+        {tjmText('admin.score.sourceTitle')}
         <input
           value={sourceTitle}
           disabled={busy}
@@ -1816,7 +1945,7 @@ function OfficialPassingScoreEditor({
         />
       </label>
       <label className="grid gap-1 text-[11px] font-medium">
-        Publisher
+        {tjmText('admin.score.publisher')}
         <input
           value={publisher}
           disabled={busy}
@@ -1825,18 +1954,18 @@ function OfficialPassingScoreEditor({
         />
       </label>
       <label className="grid gap-1 text-[11px] font-medium">
-        Source URL (optional)
+        {tjmText('admin.score.url')}
         <input
           type="url"
           value={url}
           disabled={busy}
           onChange={event => setUrl(event.target.value)}
           className={inputClass}
-          placeholder="https://…"
+          placeholder={tjmText('admin.score.urlPlaceholder')}
         />
       </label>
       <label className="grid gap-1 text-[11px] font-medium">
-        Published date (optional)
+        {tjmText('admin.score.publishedDate')}
         <input
           type="date"
           value={publishedAt}
@@ -1847,7 +1976,7 @@ function OfficialPassingScoreEditor({
       </label>
       <div className="flex flex-wrap items-end gap-2">
         <Button type="submit" size="sm" variant="secondary" disabled={busy}>
-          Save official score
+          {tjmText('admin.score.save')}
         </Button>
         <Button
           type="button"
@@ -1861,7 +1990,7 @@ function OfficialPassingScoreEditor({
             })
           }
         >
-          Clear official score
+          {tjmText('admin.score.clear')}
         </Button>
       </div>
       {error ? (
@@ -1923,7 +2052,7 @@ function AdminPanel({
         Object.entries(parsed).map(([key, value]) => [key, Number(value)])
       )
     } catch {
-      setError('Blueprint must be a JSON object such as {"Civil law": 14}.')
+      setError(tjmText('admin.exam.blueprintError'))
       return
     }
     const input: TjmExamInput = {
@@ -1934,7 +2063,7 @@ function AdminPanel({
       question_count: Number(examForm.questionCount),
       blueprint,
     }
-    await act(() => createTjmExam(input), 'Exam definition created as a draft.')
+    await act(() => createTjmExam(input), tjmText('admin.exam.created'))
   }
 
   const importQuestions = async (event: FormEvent<HTMLFormElement>) => {
@@ -1950,7 +2079,11 @@ function AdminPanel({
       const result = await importTjmQuestions(file, format as 'json' | 'jsonl' | 'csv')
       setImportResult(result)
       setNotice(
-        `Import ${result.batch_id}: ${result.imported_rows} drafts created, ${result.duplicate_rows} duplicates skipped.`
+        tjmText('admin.import.notice', {
+          batchId: result.batch_id,
+          imported: result.imported_rows,
+          duplicates: result.duplicate_rows,
+        })
       )
       await onRefresh()
       event.currentTarget.reset()
@@ -1967,31 +2100,31 @@ function AdminPanel({
         <form onSubmit={createExam} className={`${panelClass} p-5`}>
           <div className="mb-4 flex items-center gap-2">
             <ShieldCheck size={17} />
-            <h2 className="font-serif text-lg font-semibold">Exam definition</h2>
+            <h2 className="font-serif text-lg font-semibold">{tjmText('admin.exam.title')}</h2>
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="grid gap-1 text-xs font-medium">
-              ID
+              {tjmText('admin.exam.id')}
               <input
                 required
                 value={examForm.id}
                 onChange={event => setExamForm({ ...examForm, id: event.target.value })}
-                placeholder="exam-2026"
+                placeholder={tjmText('admin.exam.idPlaceholder')}
                 className={inputClass}
               />
             </label>
             <label className="grid gap-1 text-xs font-medium">
-              Title
+              {tjmText('admin.exam.name')}
               <input
                 required
                 value={examForm.title}
                 onChange={event => setExamForm({ ...examForm, title: event.target.value })}
-                placeholder="Professional certification exam"
+                placeholder={tjmText('admin.exam.titlePlaceholder')}
                 className={inputClass}
               />
             </label>
             <label className="grid gap-1 text-xs font-medium sm:col-span-2">
-              Description
+              {tjmText('admin.exam.description')}
               <input
                 value={examForm.description}
                 onChange={event => setExamForm({ ...examForm, description: event.target.value })}
@@ -1999,7 +2132,7 @@ function AdminPanel({
               />
             </label>
             <label className="grid gap-1 text-xs font-medium">
-              Duration (minutes)
+              {tjmText('admin.exam.duration')}
               <input
                 required
                 min={1}
@@ -2012,7 +2145,7 @@ function AdminPanel({
               />
             </label>
             <label className="grid gap-1 text-xs font-medium">
-              Question count
+              {tjmText('admin.exam.questionCount')}
               <input
                 required
                 min={1}
@@ -2023,7 +2156,7 @@ function AdminPanel({
               />
             </label>
             <label className="grid gap-1 text-xs font-medium">
-              Blueprint JSON
+              {tjmText('admin.exam.blueprint')}
               <input
                 required
                 value={examForm.blueprint}
@@ -2033,30 +2166,29 @@ function AdminPanel({
             </label>
           </div>
           <Button type="submit" className="mt-4" loading={localBusy || busy}>
-            Create draft exam
+            {tjmText('admin.exam.create')}
           </Button>
         </form>
 
         <form onSubmit={importQuestions} className={`${panelClass} p-5`}>
           <div className="mb-4 flex items-center gap-2">
             <FileUp size={17} />
-            <h2 className="font-serif text-lg font-semibold">Question import</h2>
+            <h2 className="font-serif text-lg font-semibold">{tjmText('admin.import.title')}</h2>
           </div>
           <p className="mb-4 text-sm leading-6 text-[var(--muted-foreground)]">
-            Upload strict UTF-8 JSON, JSONL, or CSV. Every row is validated before insertion and all
-            imported questions remain drafts.
+            {tjmText('admin.import.description')}
           </p>
           <label className="mb-3 grid gap-1 text-xs font-medium">
-            Format
+            {tjmText('admin.import.format')}
             <select name="format" className={inputClass} defaultValue="json">
-              <option value="json">JSON array</option>
-              <option value="jsonl">JSON Lines</option>
-              <option value="csv">CSV</option>
+              <option value="json">{tjmText('admin.import.jsonArray')}</option>
+              <option value="jsonl">{tjmText('admin.import.jsonLines')}</option>
+              <option value="csv">{tjmText('admin.import.csv')}</option>
             </select>
           </label>
           <label className="grid cursor-pointer gap-2 rounded-xl border border-dashed border-[var(--border)] bg-[var(--secondary)]/35 px-4 py-6 text-center text-sm hover:border-[var(--muted-foreground)]">
             <Upload size={20} className="mx-auto text-[var(--muted-foreground)]" />
-            <span>Select question file</span>
+            <span>{tjmText('admin.import.selectFile')}</span>
             <input
               required
               name="file"
@@ -2066,11 +2198,14 @@ function AdminPanel({
             />
           </label>
           <Button type="submit" className="mt-4" loading={localBusy || busy}>
-            Validate and import
+            {tjmText('admin.import.submit')}
           </Button>
           {importResult ? (
             <p className="mt-3 font-mono text-[10px] text-[var(--muted-foreground)]">
-              Batch {importResult.batch_id} · {importResult.status}
+              {tjmText('admin.import.batch', {
+                batchId: importResult.batch_id,
+                status: tjmCodeText('admin.importStatus', importResult.status),
+              })}
             </p>
           ) : null}
         </form>
@@ -2096,9 +2231,9 @@ function AdminPanel({
       <section className={`${panelClass} overflow-hidden`}>
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] px-5 py-4">
           <div>
-            <h2 className="font-serif text-lg font-semibold">Exam catalog</h2>
+            <h2 className="font-serif text-lg font-semibold">{tjmText('admin.catalog.title')}</h2>
             <p className="mt-1 text-xs text-[var(--muted-foreground)]">
-              Activation fails closed until the published blueprint is complete.
+              {tjmText('admin.catalog.description')}
             </p>
           </div>
           <Button
@@ -2108,11 +2243,13 @@ function AdminPanel({
             icon={<RefreshCw size={14} />}
             onClick={() => void onRefresh()}
           >
-            Refresh
+            {tjmText('common.refresh')}
           </Button>
         </div>
         {!exams.length ? (
-          <p className="px-5 py-8 text-sm text-[var(--muted-foreground)]">No exam definitions.</p>
+          <p className="px-5 py-8 text-sm text-[var(--muted-foreground)]">
+            {tjmText('admin.catalog.empty')}
+          </p>
         ) : (
           <div className="divide-y divide-[var(--border)]">
             {exams.map(exam => (
@@ -2121,14 +2258,17 @@ function AdminPanel({
                   <div>
                     <p className="text-sm font-medium">{exam.title}</p>
                     <p className="text-[11px] text-[var(--muted-foreground)]">
-                      {exam.id} · {exam.question_count} questions ·{' '}
-                      {formatDuration(exam.duration_seconds)} · Official passing score:{' '}
-                      {exam.official_passing_score ?? '—'}
+                      {tjmText('admin.catalog.summary', {
+                        id: exam.id,
+                        questions: exam.question_count,
+                        duration: formatDuration(exam.duration_seconds),
+                        score: exam.official_passing_score ?? '—',
+                      })}
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="rounded-full bg-[var(--secondary)] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider">
-                      {exam.status}
+                      {tjmCodeText('admin.examStatus', exam.status)}
                     </span>
                     {exam.status === 'draft' ? (
                       <Button
@@ -2137,10 +2277,13 @@ function AdminPanel({
                         variant="secondary"
                         loading={localBusy}
                         onClick={() =>
-                          void act(() => activateTjmExam(exam.id), `${exam.title} is active.`)
+                          void act(
+                            () => activateTjmExam(exam.id),
+                            tjmText('admin.catalog.activated', { title: exam.title })
+                          )
                         }
                       >
-                        Activate
+                        {tjmText('admin.catalog.activate')}
                       </Button>
                     ) : null}
                   </div>
@@ -2160,7 +2303,7 @@ function AdminPanel({
                     onSave={input =>
                       act(
                         () => updateTjmOfficialPassingScore(exam.id, input),
-                        `${exam.title} official score settings were saved.`
+                        tjmText('admin.catalog.scoreSaved', { title: exam.title })
                       )
                     }
                   />
@@ -2173,15 +2316,14 @@ function AdminPanel({
 
       <section className={`${panelClass} overflow-hidden`}>
         <div className="border-b border-[var(--border)] px-5 py-4">
-          <h2 className="font-serif text-lg font-semibold">Human review queue</h2>
+          <h2 className="font-serif text-lg font-semibold">{tjmText('admin.review.title')}</h2>
           <p className="mt-1 text-xs text-[var(--muted-foreground)]">
-            Edit, record a review decision, then publish. AI output never crosses this boundary
-            automatically.
+            {tjmText('admin.review.description')}
           </p>
         </div>
         {!questions.length ? (
           <p className="px-5 py-8 text-sm text-[var(--muted-foreground)]">
-            No draft or legacy questions are waiting for review.
+            {tjmText('admin.review.empty')}
           </p>
         ) : (
           <div className="divide-y divide-[var(--border)]">
@@ -2190,8 +2332,12 @@ function AdminPanel({
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
                     <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">
-                      {question.exam_id} · {question.area} · {question.stable_id} v
-                      {question.version}
+                      {tjmText('admin.review.questionMeta', {
+                        examId: question.exam_id,
+                        area: question.area,
+                        stableId: question.stable_id,
+                        version: question.version,
+                      })}
                     </p>
                     <p className="mt-2 text-sm leading-6">{question.stem}</p>
                   </div>
@@ -2199,10 +2345,10 @@ function AdminPanel({
                     className={`rounded-full px-2.5 py-1 text-[10px] font-semibold ${question.reviewed_by ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-amber-500/10 text-amber-700 dark:text-amber-300'}`}
                   >
                     {question.review_binding_state === 'legacy_unverified'
-                      ? 'legacy re-review required'
+                      ? tjmText('admin.review.state.legacy_unverified')
                       : question.reviewed_by
-                        ? 'reviewed'
-                        : 'unreviewed'}
+                        ? tjmText('admin.review.state.reviewed')
+                        : tjmText('admin.review.state.unreviewed')}
                   </span>
                 </div>
                 <div className="mt-3 flex flex-wrap gap-2">
@@ -2213,7 +2359,7 @@ function AdminPanel({
                       variant="ghost"
                       onClick={() => setEditing(question)}
                     >
-                      Edit
+                      {tjmText('admin.review.action.edit')}
                     </Button>
                   ) : null}
                   {adminReviewActions(question).canReview ? (
@@ -2224,12 +2370,12 @@ function AdminPanel({
                       loading={localBusy}
                       onClick={() =>
                         void act(
-                          () => reviewTjmQuestion(question.id, 'Reviewed in TJM admin workspace'),
-                          'Review decision recorded.'
+                          () => reviewTjmQuestion(question.id, tjmText('admin.review.note.reviewed')),
+                          tjmText('admin.review.notice.reviewed')
                         )
                       }
                     >
-                      Mark reviewed
+                      {tjmText('admin.review.action.markReviewed')}
                     </Button>
                   ) : adminReviewActions(question).canPublish ? (
                     <Button
@@ -2239,11 +2385,11 @@ function AdminPanel({
                       onClick={() =>
                         void act(
                           () => publishTjmQuestion(question.id),
-                          'Reviewed version published.'
+                          tjmText('admin.review.notice.published')
                         )
                       }
                     >
-                      Publish
+                      {tjmText('admin.review.action.publish')}
                     </Button>
                   ) : null}
                   {adminReviewActions(question).canReject ? (
@@ -2254,12 +2400,12 @@ function AdminPanel({
                       loading={localBusy}
                       onClick={() =>
                         void act(
-                          () => rejectTjmQuestion(question.id, 'Rejected in TJM admin workspace'),
-                          'Draft rejected.'
+                          () => rejectTjmQuestion(question.id, tjmText('admin.review.note.rejected')),
+                          tjmText('admin.review.notice.rejected')
                         )
                       }
                     >
-                      Reject
+                      {tjmText('admin.review.action.reject')}
                     </Button>
                   ) : null}
                   {adminReviewActions(question).canRetire ? (
@@ -2270,16 +2416,16 @@ function AdminPanel({
                       loading={localBusy}
                       onClick={() => {
                         const note = window.prompt(
-                          'Explain why this published question is invalid. This action preserves the audit history.'
+                          tjmText('admin.review.prompt.invalidate')
                         )
                         if (!note?.trim()) return
                         void act(
                           () => retireTjmQuestion(question.id, note.trim()),
-                          'Published content invalidated.'
+                          tjmText('admin.review.notice.invalidated')
                         )
                       }}
                     >
-                      Invalidate content
+                      {tjmText('admin.review.action.invalidate')}
                     </Button>
                   ) : null}
                   {adminReviewActions(question).canClassifySuperseded ? (
@@ -2290,11 +2436,11 @@ function AdminPanel({
                       loading={localBusy}
                       onClick={() => {
                         const replacementId = window.prompt(
-                          'Replacement question version ID for this legacy retirement:'
+                          tjmText('admin.review.prompt.replacement')
                         )
                         if (!replacementId?.trim()) return
                         const note =
-                          window.prompt('Audit note describing the historical evidence:') ?? ''
+                          window.prompt(tjmText('admin.review.prompt.auditNote')) ?? ''
                         void act(
                           () =>
                             classifyLegacyTjmRetirement(
@@ -2302,11 +2448,11 @@ function AdminPanel({
                               replacementId.trim(),
                               note.trim()
                             ),
-                          'Legacy retirement classified as superseded.'
+                          tjmText('admin.review.notice.superseded')
                         )
                       }}
                     >
-                      Classify superseded
+                      {tjmText('admin.review.action.classifySuperseded')}
                     </Button>
                   ) : null}
                 </div>
@@ -2322,9 +2468,10 @@ function AdminPanel({
           busy={localBusy}
           onClose={() => setEditing(null)}
           onSave={input =>
-            void act(() => updateTjmDraft(editing.id, input), 'Draft question updated.').then(() =>
-              setEditing(null)
-            )
+            void act(
+              () => updateTjmDraft(editing.id, input),
+              tjmText('admin.review.notice.updated')
+            ).then(() => setEditing(null))
           }
         />
       ) : null}
@@ -2333,7 +2480,6 @@ function AdminPanel({
 }
 
 export default function TjmWorkspace() {
-  const { t } = useTranslation()
   const [tab, setTab] = useState<WorkspaceTab>('learn')
   const [exams, setExams] = useState<TjmExam[]>([])
   const [preferences, setPreferences] = useState<TjmExamPreferences>({
@@ -2349,15 +2495,14 @@ export default function TjmWorkspace() {
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const commandLedgerRef = useRef<TjmCommandLedger | null>(null)
-  if (!commandLedgerRef.current) {
-    commandLedgerRef.current = new TjmCommandLedger(
-      undefined,
-      sessionCommandStorage(),
-      'deeptutor.tjm.workspaceCommands'
-    )
-  }
-  const commandLedger = commandLedgerRef.current
+  const [commandLedger] = useState(
+    () =>
+      new TjmCommandLedger(
+        undefined,
+        sessionCommandStorage(),
+        'deeptutor.tjm.workspaceCommands'
+      )
+  )
 
   const refresh = useCallback(async () => {
     setError(null)
@@ -2491,55 +2636,57 @@ export default function TjmWorkspace() {
   const activeExams = exams.filter(exam => exam.status === 'active')
 
   return (
-    <main className="h-full min-h-dvh overflow-y-auto bg-[var(--background)] text-[var(--foreground)]">
+    <main
+      lang={TJM_LOCALE}
+      className="h-full min-h-dvh overflow-y-auto bg-[var(--background)] text-[var(--foreground)]"
+    >
       <div className="mx-auto w-full max-w-[1500px] px-4 py-6 sm:px-6 lg:px-8">
         <header className="mb-5 flex flex-wrap items-end justify-between gap-4">
           <div>
             <div className="mb-2 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
-              <ListChecks size={14} /> Test Judgment Module
+              <ListChecks size={14} /> {tjmText('workspace.eyebrow')}
             </div>
             <h1 className="font-serif text-[28px] font-semibold leading-tight tracking-[-0.02em] sm:text-[34px]">
-              {t('TJM Exam Studio')}
+              {tjmText('workspace.title')}
             </h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--muted-foreground)]">
-              Versioned questions, deliberate answers, deterministic grading, and an auditable
-              review loop.
+              {tjmText('workspace.description')}
             </p>
           </div>
           <div className="flex items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--card)] px-3 py-1.5 text-[11px] text-[var(--muted-foreground)]">
-            <ShieldCheck size={14} /> Server-authoritative grading
+            <ShieldCheck size={14} /> {tjmText('workspace.authorityBadge')}
           </div>
         </header>
 
         {!attempt ? (
           <nav
             className="mb-5 flex gap-3 overflow-x-auto border-b border-[var(--border)] sm:gap-5"
-            aria-label="TJM workspace"
+            aria-label={tjmText('aria.workspace')}
           >
             <TabButton
               active={tab === 'learn'}
               icon={BookCheck}
-              label="Learn"
+              label={tjmText('workspace.nav.learn')}
               onClick={() => setTab('learn')}
             />
             <TabButton
               active={tab === 'review'}
               icon={RotateCcw}
-              label="Review"
+              label={tjmText('workspace.nav.review')}
               count={queue.length}
               onClick={() => setTab('review')}
             />
             <TabButton
               active={tab === 'insights'}
               icon={BarChart3}
-              label="Insights"
+              label={tjmText('workspace.nav.insights')}
               onClick={() => setTab('insights')}
             />
             {isAdmin ? (
               <TabButton
                 active={tab === 'admin'}
                 icon={ShieldCheck}
-                label="Admin"
+                label={tjmText('workspace.nav.admin')}
                 count={questions.length}
                 onClick={() => setTab('admin')}
               />
@@ -2563,14 +2710,14 @@ export default function TjmWorkspace() {
               icon={<RefreshCw size={14} />}
               onClick={() => void refresh()}
             >
-              Retry
+              {tjmText('common.retry')}
             </Button>
           </div>
         ) : null}
 
         {loading ? (
           <div className="flex min-h-[45vh] items-center justify-center gap-2 text-sm text-[var(--muted-foreground)]">
-            <Loader2 size={18} className="animate-spin" /> Loading TJM workspace…
+            <Loader2 size={18} className="animate-spin" /> {tjmText('workspace.loading')}
           </div>
         ) : attempt ? (
           <AttemptDesk

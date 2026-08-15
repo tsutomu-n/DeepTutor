@@ -34,6 +34,7 @@ RUN npm config set fetch-timeout 600000 && \
 
 # Copy frontend source code
 COPY web/ ./
+COPY THIRD_PARTY_NOTICES.md /app/THIRD_PARTY_NOTICES.md
 
 # Provide the single source of truth for the app version so next.config.js
 # can read it during ``npm run build`` and inline it into the bundle.

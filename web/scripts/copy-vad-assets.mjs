@@ -9,6 +9,7 @@ const assets = [
   ['node_modules/@ricky0123/vad-web/dist/silero_vad_v5.onnx', 'silero_vad_v5.onnx'],
   ['node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.mjs', 'ort-wasm-simd-threaded.mjs'],
   ['node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm', 'ort-wasm-simd-threaded.wasm'],
+  ['../THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_NOTICES.md'],
 ]
 
 mkdirSync(output, { recursive: true })

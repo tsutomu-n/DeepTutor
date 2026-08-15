@@ -16,17 +16,12 @@
 
 <p align="center">
   <a href="README.md"><img alt="English" height="40" src="https://img.shields.io/badge/English-BCDCF7"></a>&nbsp;
-  <a href="assets/README/README_CN.md"><img alt="简体中文" height="40" src="https://img.shields.io/badge/简体中文-CDCFD4"></a>&nbsp;
-  <a href="assets/README/README_JA.md"><img alt="日本語" height="40" src="https://img.shields.io/badge/日本語-CDCFD4"></a>&nbsp;
-  <a href="assets/README/README_ES.md"><img alt="Español" height="40" src="https://img.shields.io/badge/Español-CDCFD4"></a>&nbsp;
-  <a href="assets/README/README_FR.md"><img alt="Français" height="40" src="https://img.shields.io/badge/Français-CDCFD4"></a>&nbsp;
-  <a href="assets/README/README_AR.md"><img alt="Arabic" height="40" src="https://img.shields.io/badge/Arabic-CDCFD4"></a>&nbsp;
-  <a href="assets/README/README_RU.md"><img alt="Русский" height="40" src="https://img.shields.io/badge/Русский-CDCFD4"></a>&nbsp;
-  <a href="assets/README/README_HI.md"><img alt="Hindi" height="40" src="https://img.shields.io/badge/Hindi-CDCFD4"></a>&nbsp;
-  <a href="assets/README/README_PT.md"><img alt="Português" height="40" src="https://img.shields.io/badge/Português-CDCFD4"></a>&nbsp;
-  <a href="assets/README/README_TH.md"><img alt="Thai" height="40" src="https://img.shields.io/badge/Thai-CDCFD4"></a>&nbsp;
-  <a href="assets/README/README_PL.md"><img alt="Polski" height="40" src="https://img.shields.io/badge/Polski-CDCFD4"></a>
+  <a href="assets/README/README_JA.md"><img alt="日本語" height="40" src="https://img.shields.io/badge/日本語-CDCFD4"></a>
 </p>
+
+Only the English and Japanese guides are synchronized with the TJM fork. The
+other translations remain in the repository as historical upstream snapshots;
+do not use their installation or release instructions for this fork.
 
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![Next.js 16](https://img.shields.io/badge/Next.js-16-000000?style=flat-square&logo=next.js&logoColor=white)](https://nextjs.org/)
@@ -41,6 +36,8 @@
 [Features](#-key-features) · [Get Started](#-get-started) · [Explore](#-explore-deeptutor) · [CLI](#%EF%B8%8F-deeptutor-cli--agent-native-interface) · [Ecosystem](#-ecosystem--eduhub--the-skills-community) · [Community](#-community)
 
 </div>
+
+> TJM fork status updated: 2026-08-15_11:23 (Asia/Tokyo).
 
 ---
 
@@ -200,20 +197,14 @@ DeepTutor is an agent-native learning workspace that connects tutoring, problem 
 DeepTutor ships four installation paths. They all share one workspace layout: settings live in `data/user/settings/` under the directory you launch from (or under `DEEPTUTOR_HOME` / `deeptutor start --home` if you set one explicitly). For the full app, the recommended flow is **pick a workspace directory → install → `deeptutor init` → `deeptutor start`**.
 
 <details>
-<summary><b>Option 1 — Install From PyPI</b> · full local Web app + CLI, no clone required</summary>
+<summary><b>Option 1 — Install From PyPI</b> · not available for this TJM fork yet</summary>
 
-Full local Web app + CLI, no clone required. Needs **Python 3.11–3.13** and a **Node.js 20+** runtime on PATH (the packaged Next.js standalone server is spawned by `deeptutor start`).
-
-```bash
-mkdir -p my-deeptutor && cd my-deeptutor
-pip install -U deeptutor
-deeptutor init     # prompts for ports + LLM provider + optional embedding
-deeptutor start    # starts backend + frontend; keep the terminal open
-```
-
-`deeptutor init` prompts for backend port (default `8001`), frontend port (default `3782`), LLM provider / base URL / API key / model, and an optional embedding provider for Knowledge Base / RAG.
-
-After `deeptutor start`, open the frontend URL printed in the terminal — by default [http://127.0.0.1:3782](http://127.0.0.1:3782). Press `Ctrl+C` in that terminal to stop both backend and frontend. Skipping `deeptutor init` is fine for a quick trial; the app boots with default ports and empty model settings, configure them later in **Settings → Models**.
+The public [`deeptutor` distribution](https://pypi.org/project/deeptutor/1.5.8/)
+currently resolves to the existing upstream package and does not contain TJM.
+This fork's validated wheel has not been published, and version `1.5.8` is
+already occupied on PyPI. Use the source installation below until the
+maintainer chooses an unused version and confirms the PyPI distribution
+ownership, or chooses a fork-specific distribution name.
 
 </details>
 
@@ -223,7 +214,7 @@ After `deeptutor start`, open the frontend URL printed in the terminal — by de
 For development against a checkout. Use **Python 3.11–3.13** and **Node.js 22 LTS** to match CI and Docker.
 
 ```bash
-git clone https://github.com/HKUDS/DeepTutor.git
+git clone --branch tjm/implementation --single-branch https://github.com/tsutomu-n/DeepTutor.git
 cd DeepTutor
 
 # Create a venv (macOS/Linux). Windows PowerShell:
@@ -284,19 +275,23 @@ deeptutor start --dev
 <details>
 <summary><b>Option 3 — Docker</b> · one self-contained container</summary>
 
-One container for the full Web app. Images on GitHub Container Registry:
-
-- `ghcr.io/hkuds/deeptutor:latest` — stable release
-- `ghcr.io/hkuds/deeptutor:pre` — pre-release, when available
+One container for the full Web app. This TJM fork does not have a published
+GHCR image yet, so build the current branch locally. The upstream DeepTutor
+image does not contain TJM.
 
 > See [CONTAINERIZATION.md](./CONTAINERIZATION.md) for podman/rootless/read-only-rootfs deployments and the full per-installation guide.
 
 ```bash
+docker build --target production -t deeptutor:tjm-local .
 docker run --rm --name deeptutor \
   -p 127.0.0.1:3782:3782 \
   -v deeptutor-data:/app/data \
-  ghcr.io/hkuds/deeptutor:latest
+  deeptutor:tjm-local
 ```
+
+After a maintainer publishes a release, the same fork is available as
+`ghcr.io/tsutomu-n/deeptutor:<release-tag>`. Pin that tag instead of assuming
+that `latest` has been published.
 
 > **Only `3782` needs to be published.** The browser talks exclusively to the frontend origin; the Next.js middleware (`web/proxy.ts`) forwards `/api/*` and `/ws/*` to the FastAPI backend **inside the container**. Publishing `8001` (`-p 127.0.0.1:8001:8001`) is optional — handy only for hitting the API directly with curl or scripts.
 
@@ -341,7 +336,7 @@ docker run --rm --name deeptutor \
   -p 127.0.0.1:3782:3782 -p 127.0.0.1:8001:8001 \
   --add-host=host.docker.internal:host-gateway \
   -v deeptutor-data:/app/data \
-  ghcr.io/hkuds/deeptutor:latest
+  deeptutor:tjm-local
 ```
 
 Then in **Settings → Models**, point the provider Base URL at `host.docker.internal`:
@@ -366,7 +361,7 @@ Docker Desktop (macOS/Windows) usually resolves `host.docker.internal` without `
 When you don't need the Web UI. The CLI-only package is installed from a source checkout, not from PyPI.
 
 ```bash
-git clone https://github.com/HKUDS/DeepTutor.git
+git clone --branch tjm/implementation --single-branch https://github.com/tsutomu-n/DeepTutor.git
 cd DeepTutor
 
 # Create a venv (macOS/Linux). Windows PowerShell:

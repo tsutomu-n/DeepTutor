@@ -111,7 +111,300 @@ def test_learning_store_initializes_only_user_learning_schema(tmp_path: Path) ->
         "review_attempt_queue_links",
         "exam_preferences",
     }
+    assert _migration_versions(db_path) == [1, 2, 3, 4, 5, 6]
+
+
+def test_learning_v6_links_legacy_voice_resolutions_to_their_candidate(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "legacy-voice.db"
+
+    class LegacyLearningStore(LearningStore):
+        migrations = LearningStore.migrations[:5]
+
+    legacy = LegacyLearningStore(db_path)
+    with legacy.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO attempts (
+                id, exam_id, mode, status, exam_snapshot_json, started_at
+            ) VALUES ('attempt', 'exam', 'practice', 'in_progress', ?,
+                      '2026-01-01T00:00:00Z')
+            """,
+            (_v2_snapshot(),),
+        )
+        conn.execute(
+            """
+            INSERT INTO attempt_items (
+                attempt_id, position, question_version_id, area,
+                first_presented_at, catalog_disposition
+            ) VALUES ('attempt', 0, 'qv-1', 'area',
+                      '2026-01-01T00:00:01Z', 'current')
+            """
+        )
+        candidate_id = int(
+            conn.execute(
+                """
+                INSERT INTO answer_events (
+                    attempt_id, position, event_type, option_key, transcript, created_at
+                ) VALUES ('attempt', 0, 'voice_candidate', 'A', '1番',
+                          '2026-01-01T00:00:02Z')
+                """
+            ).lastrowid
+        )
+        resolution_id = int(
+            conn.execute(
+                """
+                INSERT INTO answer_events (
+                    attempt_id, position, event_type, option_key, transcript, created_at
+                ) VALUES ('attempt', 0, 'voice_cancelled', 'A', '1番',
+                          '2026-01-01T00:00:03Z')
+                """
+            ).lastrowid
+        )
+
+    migrated = LearningStore(db_path)
+
+    assert _migration_versions(db_path) == [1, 2, 3, 4, 5, 6]
+    with migrated.connect() as conn:
+        resolution = conn.execute(
+            "SELECT voice_candidate_id FROM answer_events WHERE id = ?",
+            (resolution_id,),
+        ).fetchone()
+        assert resolution["voice_candidate_id"] == candidate_id
+        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"):
+            conn.execute(
+                """
+                INSERT INTO answer_events (
+                    attempt_id, position, event_type, option_key, transcript,
+                    created_at, voice_candidate_id
+                ) VALUES ('attempt', 0, 'voice_confirmed', 'A', '1番',
+                          '2026-01-01T00:00:04Z', ?)
+                """,
+                (candidate_id,),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            conn.execute(
+                "UPDATE answer_events SET transcript = '改変' WHERE id = ?",
+                (candidate_id,),
+            )
+
+
+def test_learning_v6_rejects_orphaned_legacy_voice_resolution(tmp_path: Path) -> None:
+    db_path = tmp_path / "orphaned-voice.db"
+
+    class LegacyLearningStore(LearningStore):
+        migrations = LearningStore.migrations[:5]
+
+    legacy = LegacyLearningStore(db_path)
+    with legacy.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO attempts (
+                id, exam_id, mode, status, exam_snapshot_json, started_at
+            ) VALUES ('attempt', 'exam', 'practice', 'in_progress', ?,
+                      '2026-01-01T00:00:00Z')
+            """,
+            (_v2_snapshot(),),
+        )
+        conn.execute(
+            """
+            INSERT INTO attempt_items (
+                attempt_id, position, question_version_id, area,
+                first_presented_at, catalog_disposition
+            ) VALUES ('attempt', 0, 'qv-1', 'area',
+                      '2026-01-01T00:00:01Z', 'current')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO answer_events (
+                attempt_id, position, event_type, option_key, transcript, created_at
+            ) VALUES ('attempt', 0, 'voice_confirmed', 'A', '1番',
+                      '2026-01-01T00:00:02Z')
+            """
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="valid_learning_v6_voice_history"):
+        LearningStore(db_path)
     assert _migration_versions(db_path) == [1, 2, 3, 4, 5]
+
+
+@pytest.mark.parametrize(
+    (
+        "candidate_option",
+        "candidate_transcript",
+        "resolution_type",
+        "resolution_option",
+        "resolution_transcript",
+    ),
+    [
+        ("A", "1番", "voice_confirmed", "B", "1番"),
+        ("A", "1番", "voice_confirmed", "A", "別の認識結果"),
+        (None, "曖昧", "voice_confirmed", None, "曖昧"),
+        ("\t", "1番", "voice_confirmed", "\t", "1番"),
+        ("A", None, "voice_cancelled", "A", None),
+        ("A", "  ", "voice_cancelled", "A", "  "),
+        ("A", "\t", "voice_cancelled", "A", "\t"),
+        ("A", "\n", "voice_cancelled", "A", "\n"),
+        ("A", "　", "voice_cancelled", "A", "　"),
+    ],
+)
+def test_learning_v6_rejects_invalid_legacy_voice_resolution(
+    tmp_path: Path,
+    candidate_option: str | None,
+    candidate_transcript: str | None,
+    resolution_type: str,
+    resolution_option: str | None,
+    resolution_transcript: str | None,
+) -> None:
+    db_path = tmp_path / "invalid-legacy-voice.db"
+
+    class LegacyLearningStore(LearningStore):
+        migrations = LearningStore.migrations[:5]
+
+    legacy = LegacyLearningStore(db_path)
+    with legacy.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO attempts (
+                id, exam_id, mode, status, exam_snapshot_json, started_at
+            ) VALUES ('attempt', 'exam', 'practice', 'in_progress', ?,
+                      '2026-01-01T00:00:00Z')
+            """,
+            (_v2_snapshot(),),
+        )
+        conn.execute(
+            """
+            INSERT INTO attempt_items (
+                attempt_id, position, question_version_id, area,
+                first_presented_at, catalog_disposition
+            ) VALUES ('attempt', 0, 'qv-1', 'area',
+                      '2026-01-01T00:00:01Z', 'current')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO answer_events (
+                attempt_id, position, event_type, option_key, transcript, created_at
+            ) VALUES ('attempt', 0, 'voice_candidate', ?, ?,
+                      '2026-01-01T00:00:02Z')
+            """,
+            (candidate_option, candidate_transcript),
+        )
+        conn.execute(
+            """
+            INSERT INTO answer_events (
+                attempt_id, position, event_type, option_key, transcript, created_at
+            ) VALUES ('attempt', 0, ?, ?, ?, '2026-01-01T00:00:03Z')
+            """,
+            (resolution_type, resolution_option, resolution_transcript),
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="valid_learning_v6_voice_history"):
+        LearningStore(db_path)
+    assert _migration_versions(db_path) == [1, 2, 3, 4, 5]
+    with sqlite3.connect(db_path) as conn:
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(answer_events)")}
+    assert "voice_candidate_id" not in columns
+
+
+def test_learning_v6_rejects_invalid_new_voice_events(tmp_path: Path) -> None:
+    store = LearningStore(tmp_path / "invalid-new-voice.db")
+    with store.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO attempts (
+                id, exam_id, mode, status, exam_snapshot_json, started_at
+            ) VALUES ('attempt', 'exam', 'practice', 'in_progress', ?,
+                      '2026-01-01T00:00:00Z')
+            """,
+            (_v2_snapshot(),),
+        )
+        conn.execute(
+            """
+            INSERT INTO attempt_items (
+                attempt_id, position, question_version_id, area,
+                first_presented_at, catalog_disposition
+            ) VALUES ('attempt', 0, 'qv-1', 'area',
+                      '2026-01-01T00:00:01Z', 'current')
+            """
+        )
+        for invalid_transcript in (None, "", "  ", "\t", "\n", "　"):
+            with pytest.raises(sqlite3.IntegrityError, match="invalid voice candidate event"):
+                conn.execute(
+                    """
+                    INSERT INTO answer_events (
+                        attempt_id, position, event_type, option_key, transcript, created_at
+                    ) VALUES ('attempt', 0, 'voice_candidate', 'A', ?,
+                              '2026-01-01T00:00:02Z')
+                    """,
+                    (invalid_transcript,),
+                )
+        valid_candidate_id = int(
+            conn.execute(
+                """
+                INSERT INTO answer_events (
+                    attempt_id, position, event_type, option_key, transcript, created_at
+                ) VALUES ('attempt', 0, 'voice_candidate', 'A', '1番',
+                          '2026-01-01T00:00:03Z')
+                """
+            ).lastrowid
+        )
+        for option_key, transcript in (("B", "1番"), ("A", "別の認識結果")):
+            with pytest.raises(sqlite3.IntegrityError, match="invalid voice candidate event"):
+                conn.execute(
+                    """
+                    INSERT INTO answer_events (
+                        attempt_id, position, event_type, option_key, transcript,
+                        created_at, voice_candidate_id
+                    ) VALUES ('attempt', 0, 'voice_confirmed', ?, ?,
+                              '2026-01-01T00:00:04Z', ?)
+                    """,
+                    (option_key, transcript, valid_candidate_id),
+                )
+        ambiguous_candidate_id = int(
+            conn.execute(
+                """
+                INSERT INTO answer_events (
+                    attempt_id, position, event_type, option_key, transcript, created_at
+                ) VALUES ('attempt', 0, 'voice_candidate', NULL, '一番か二番',
+                          '2026-01-01T00:00:05Z')
+                """
+            ).lastrowid
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="invalid voice candidate event"):
+            conn.execute(
+                """
+                INSERT INTO answer_events (
+                    attempt_id, position, event_type, option_key, transcript,
+                    created_at, voice_candidate_id
+                ) VALUES ('attempt', 0, 'voice_confirmed', NULL, '一番か二番',
+                          '2026-01-01T00:00:06Z', ?)
+                """,
+                (ambiguous_candidate_id,),
+            )
+        whitespace_option_candidate_id = int(
+            conn.execute(
+                """
+                INSERT INTO answer_events (
+                    attempt_id, position, event_type, option_key, transcript, created_at
+                ) VALUES ('attempt', 0, 'voice_candidate', '\t', '候補',
+                          '2026-01-01T00:00:07Z')
+                """
+            ).lastrowid
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="invalid voice candidate event"):
+            conn.execute(
+                """
+                INSERT INTO answer_events (
+                    attempt_id, position, event_type, option_key, transcript,
+                    created_at, voice_candidate_id
+                ) VALUES ('attempt', 0, 'voice_confirmed', '\t', '候補',
+                          '2026-01-01T00:00:08Z', ?)
+                """,
+                (whitespace_option_candidate_id,),
+            )
 
 
 def test_catalog_store_serializes_concurrent_initialization(tmp_path: Path) -> None:
@@ -254,7 +547,7 @@ def test_learning_v2_preserves_client_metrics_without_inventing_server_time(
 
     migrated = LearningStore(db_path)
 
-    assert _migration_versions(db_path) == [1, 2, 3, 4, 5]
+    assert _migration_versions(db_path) == [1, 2, 3, 4, 5, 6]
     with migrated.connect() as conn:
         item = conn.execute(
             """
@@ -561,7 +854,7 @@ def test_learning_v4_preserves_legacy_active_exam_conflicts_but_blocks_new_ones(
 
     migrated = LearningStore(db_path)
 
-    assert _migration_versions(db_path) == [1, 2, 3, 4, 5]
+    assert _migration_versions(db_path) == [1, 2, 3, 4, 5, 6]
     with migrated.connect() as conn:
         assert (
             conn.execute(

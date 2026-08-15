@@ -7,13 +7,14 @@ import {
   updateTjmOfficialPassingScore,
 } from '../lib/tjm-api'
 import {
-  formatTjmNotEvaluatedReason,
+  getTjmNotEvaluatedReasonKey,
   getTjmResultDisplay,
   normalizeTjmAttemptResult,
   safeTjmSourceUrl,
   type TjmAttemptResult,
   type TjmOfficialPassingScoreSource,
 } from '../lib/tjm-types'
+import { tjmText } from '../i18n/tjm'
 
 const source: TjmOfficialPassingScoreSource = {
   title: 'Published scoring notice',
@@ -45,30 +46,32 @@ test('result display keeps a zero threshold and separates official from personal
   const display = getTjmResultDisplay(eligibleResult())
 
   assert.deepEqual(display.official, {
-    label: 'Passed',
+    labelKey: 'result.status.officialPassed',
     threshold: 0,
     evaluated: true,
     positive: true,
-    reason: null,
+    reasonKey: null,
   })
   assert.deepEqual(display.practiceTarget, {
-    label: 'Target achieved',
+    labelKey: 'result.status.practiceAchieved',
     threshold: 0,
     evaluated: true,
     positive: true,
-    reason: null,
+    reasonKey: null,
   })
+  assert.equal(tjmText(display.official.labelKey), '合格基準以上')
+  assert.equal(tjmText(display.practiceTarget.labelKey), '目標達成')
 })
 
 test('content invalidation suppresses passed and achieved badges even if nested data regresses', () => {
   const result = { ...eligibleResult(), validity: 'content_invalidated' as const }
   const display = getTjmResultDisplay(result)
 
-  assert.equal(display.official.label, 'Not evaluated')
+  assert.equal(display.official.labelKey, 'result.status.notEvaluated')
   assert.equal(display.official.evaluated, false)
   assert.equal(display.official.positive, false)
-  assert.match(display.official.reason ?? '', /content was invalidated/i)
-  assert.equal(display.practiceTarget.label, 'Not evaluated')
+  assert.equal(display.official.reasonKey, 'result.reason.contentInvalidated')
+  assert.equal(display.practiceTarget.labelKey, 'result.status.notEvaluated')
   assert.equal(display.practiceTarget.evaluated, false)
   assert.equal(display.practiceTarget.positive, false)
 })
@@ -89,17 +92,15 @@ test('server not-evaluated reasons remain visible for both result dimensions', (
     },
   })
 
+  assert.equal(display.official.reasonKey, 'result.reason.officialScoreUnavailable')
+  assert.equal(display.practiceTarget.reasonKey, 'result.reason.practiceTargetUnset')
   assert.equal(
-    display.official.reason,
-    'An official passing score is not available for this exam.'
-  )
-  assert.equal(
-    display.practiceTarget.reason,
-    'A personal practice target was not set when this attempt began.'
+    tjmText(display.official.reasonKey!),
+    'この試験には、出典が確認された公式の合格基準点が登録されていません。'
   )
 })
 
-test('every not-evaluated reason has copy and unknown reasons fail closed', () => {
+test('every not-evaluated reason has a stable copy key and unknown reasons fail closed', () => {
   assert.deepEqual(
     [
       'official_score_unavailable',
@@ -108,18 +109,18 @@ test('every not-evaluated reason has copy and unknown reasons fail closed', () =
       'content_invalidated',
       'incomplete_score_scope',
       'legacy_score_ambiguous',
-    ].map(formatTjmNotEvaluatedReason),
+    ].map(getTjmNotEvaluatedReasonKey),
     [
-      'An official passing score is not available for this exam.',
-      'A personal practice target was not set when this attempt began.',
-      'This attempt mode is not eligible for this result.',
-      'Content was invalidated after grading; the raw score is retained, but official and personal target results are not evaluated.',
-      'The scored question scope is incomplete, so this result is not evaluated.',
-      'This legacy attempt does not distinguish an official score from a personal target.',
+      'result.reason.officialScoreUnavailable',
+      'result.reason.practiceTargetUnset',
+      'result.reason.modeNotEligible',
+      'result.reason.contentInvalidated',
+      'result.reason.incompleteScoreScope',
+      'result.reason.legacyScoreAmbiguous',
     ]
   )
-  assert.equal(formatTjmNotEvaluatedReason('future_reason'), 'Not evaluated.')
-  assert.equal(formatTjmNotEvaluatedReason(null), 'Not evaluated.')
+  assert.equal(getTjmNotEvaluatedReasonKey('future_reason'), 'result.reason.unknown')
+  assert.equal(getTjmNotEvaluatedReasonKey(null), 'result.reason.unknown')
 })
 
 test('an unknown not-evaluated reason cannot become a positive result badge', () => {
@@ -134,7 +135,7 @@ test('an unknown not-evaluated reason cannot become a positive result badge', ()
   const display = getTjmResultDisplay(result)
   assert.equal(display.official.positive, false)
   assert.equal(display.practiceTarget.positive, false)
-  assert.equal(display.official.reason, 'No deterministic result projection is available.')
+  assert.equal(display.official.reasonKey, 'result.reason.noProjection')
 })
 
 test('unknown or contradictory runtime result projections fail closed', () => {

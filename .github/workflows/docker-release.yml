@@ -3,29 +3,100 @@ name: Docker Release
 # Triggered when a GitHub Release is published.
 # Builds a multi-platform Docker image and pushes it to GitHub Container Registry (GHCR).
 #
-# Image: ghcr.io/hkuds/deeptutor
+# Image: ghcr.io/<repository-owner>/<repository-name>
 # Tags:
 #   - Version tag stripped of 'v' prefix (e.g. release v1.2.3 → image tag 1.2.3)
 #   - latest (always points to the most recently published release)
 #
 # Platforms: linux/amd64, linux/arm64
+# Publication is disabled unless the repository owner explicitly sets
+# ENABLE_DOCKER_RELEASE=true after reviewing the Draft PR and release evidence.
 
 on:
   release:
     types: [published]
 
+concurrency:
+  group: docker-release-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
+  checks: read
   packages: write
 
 jobs:
   build-and-push:
     name: Build and Push Multi-Platform Docker Image
+    if: ${{ github.repository == 'tsutomu-n/DeepTutor' && vars.ENABLE_DOCKER_RELEASE == 'true' }}
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+
+      - name: Verify release tag matches DeepTutor version
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          code_version="$(python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          source = Path("deeptutor/__version__.py").read_text(encoding="utf-8")
+          match = re.search(r'^__version__\s*=\s*"([^"]+)"', source, re.MULTILINE)
+          if not match:
+              raise SystemExit("Could not read deeptutor version")
+          print(match.group(1))
+          PY
+          )"
+          tag_version="${RELEASE_TAG#v}"
+          if [[ "$tag_version" != "$code_version" ]]; then
+            echo "Release tag $RELEASE_TAG does not match DeepTutor $code_version." >&2
+            exit 1
+          fi
+
+      - name: Verify release tag is on main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main:refs/remotes/origin/main --no-tags
+          tag="${{ github.event.release.tag_name }}"
+          tag_commit="$(git rev-list -n 1 "$tag")"
+          if ! git merge-base --is-ancestor "$tag_commit" origin/main; then
+            echo "Release tag $tag ($tag_commit) is not on origin/main; refusing to publish to GHCR." >&2
+            exit 1
+          fi
+
+      - name: Verify release commit acceptance checks
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag_commit="$(git rev-list -n 1 "${{ github.event.release.tag_name }}")"
+          check_runs="$(
+            gh api --method GET \
+              "repos/${GITHUB_REPOSITORY}/commits/${tag_commit}/check-runs" \
+              -f per_page=100
+          )"
+          required_checks=(
+            "Test Summary"
+            "TJM Docker Pre-release Preflight (linux/arm64 via QEMU)"
+          )
+          for required_check in "${required_checks[@]}"; do
+            if ! jq -e --arg name "$required_check" \
+              '[.check_runs[] | select(.name == $name and .status == "completed" and .conclusion == "success")] | length > 0' \
+              <<<"$check_runs" >/dev/null; then
+              echo "Required successful check missing for $tag_commit: $required_check" >&2
+              exit 1
+            fi
+          done
 
       # Required for linux/arm64 cross-compilation on GitHub-hosted ubuntu runners
       - name: Set up QEMU
@@ -49,10 +120,12 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/hkuds/deeptutor
+          images: ghcr.io/${{ github.repository }}
+          flavor: latest=false
           tags: |
             type=semver,pattern={{version}}
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ github.event.release.prerelease == false }}
+            type=raw,value=pre,enable=${{ github.event.release.prerelease == true }}
 
       - name: Build and push
         uses: docker/build-push-action@v6

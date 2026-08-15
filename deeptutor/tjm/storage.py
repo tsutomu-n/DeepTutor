@@ -61,6 +61,11 @@ def _valid_exam_id(value: object) -> int:
         return 0
 
 
+def _nonblank_text(value: object) -> int:
+    """Match Python's Unicode-aware ``str.strip`` boundary inside SQLite."""
+    return int(isinstance(value, str) and bool(value.strip()))
+
+
 def _valid_attempt_record(
     snapshot_json: object,
     exam_id: object,
@@ -183,6 +188,12 @@ class _SQLiteStore:
             "tjm_valid_attempt_record",
             8,
             _valid_attempt_record,
+            deterministic=True,
+        )
+        conn.create_function(
+            "tjm_nonblank_text",
+            1,
+            _nonblank_text,
             deterministic=True,
         )
         conn.execute("PRAGMA foreign_keys = ON")
@@ -1536,6 +1547,106 @@ END;
 """
 
 
+_LEARNING_V6 = """
+CREATE TABLE learning_v6_preflight (
+    valid INTEGER NOT NULL,
+    CONSTRAINT valid_learning_v6_voice_history CHECK (valid = 1)
+);
+
+INSERT INTO learning_v6_preflight (valid)
+SELECT 0
+FROM answer_events AS resolution
+WHERE resolution.event_type IN ('voice_confirmed', 'voice_cancelled')
+  AND NOT EXISTS (
+      SELECT 1
+      FROM answer_events AS candidate
+      WHERE candidate.id = (
+          SELECT MAX(prior.id)
+          FROM answer_events AS prior
+          WHERE prior.attempt_id = resolution.attempt_id
+            AND prior.position = resolution.position
+            AND prior.event_type = 'voice_candidate'
+            AND prior.id < resolution.id
+      )
+        AND candidate.option_key IS resolution.option_key
+        AND candidate.transcript IS resolution.transcript
+        AND tjm_nonblank_text(candidate.transcript) = 1
+        AND (
+            resolution.event_type != 'voice_confirmed' OR
+            tjm_nonblank_text(candidate.option_key) = 1
+        )
+  );
+
+INSERT INTO learning_v6_preflight (valid)
+SELECT 0
+FROM answer_events AS candidate
+WHERE candidate.event_type = 'voice_candidate'
+  AND (
+      tjm_nonblank_text(candidate.transcript) != 1
+  );
+
+DROP TABLE learning_v6_preflight;
+
+ALTER TABLE answer_events ADD COLUMN voice_candidate_id INTEGER
+    REFERENCES answer_events(id);
+
+DROP TRIGGER prevent_answer_event_update;
+
+UPDATE answer_events
+SET voice_candidate_id = (
+    SELECT MAX(candidate.id)
+    FROM answer_events AS candidate
+    WHERE candidate.attempt_id = answer_events.attempt_id
+      AND candidate.position = answer_events.position
+      AND candidate.event_type = 'voice_candidate'
+      AND candidate.id < answer_events.id
+)
+WHERE event_type IN ('voice_confirmed', 'voice_cancelled');
+
+CREATE TRIGGER prevent_answer_event_update
+BEFORE UPDATE ON answer_events
+BEGIN
+    SELECT RAISE(ABORT, 'answer event is immutable');
+END;
+
+CREATE UNIQUE INDEX idx_answer_events_voice_resolution
+ON answer_events(voice_candidate_id)
+WHERE event_type IN ('voice_confirmed', 'voice_cancelled');
+
+CREATE TRIGGER validate_voice_candidate_resolution_reference
+BEFORE INSERT ON answer_events
+WHEN (
+    NEW.event_type = 'voice_candidate' AND (
+        tjm_nonblank_text(NEW.transcript) != 1
+    )
+) OR (
+    NEW.event_type IN ('voice_confirmed', 'voice_cancelled') AND (
+        typeof(NEW.voice_candidate_id) != 'integer' OR
+        NOT EXISTS (
+            SELECT 1 FROM answer_events AS candidate
+            WHERE candidate.id = NEW.voice_candidate_id
+              AND candidate.attempt_id = NEW.attempt_id
+              AND candidate.position = NEW.position
+              AND candidate.event_type = 'voice_candidate'
+              AND candidate.option_key IS NEW.option_key
+              AND candidate.transcript IS NEW.transcript
+              AND tjm_nonblank_text(candidate.transcript) = 1
+              AND (
+                  NEW.event_type != 'voice_confirmed' OR
+                  tjm_nonblank_text(candidate.option_key) = 1
+              )
+        )
+    )
+) OR (
+    NEW.event_type NOT IN ('voice_confirmed', 'voice_cancelled') AND
+    NEW.voice_candidate_id IS NOT NULL
+)
+BEGIN
+    SELECT RAISE(ABORT, 'invalid voice candidate event');
+END;
+"""
+
+
 class CatalogStore(_SQLiteStore):
     """Authoritative deployment-wide exam and immutable question catalog."""
 
@@ -1545,7 +1656,14 @@ class CatalogStore(_SQLiteStore):
 class LearningStore(_SQLiteStore):
     """Request-owner-scoped attempts and append-only answer history."""
 
-    migrations = (_LEARNING_V1, _LEARNING_V2, _LEARNING_V3, _LEARNING_V4, _LEARNING_V5)
+    migrations = (
+        _LEARNING_V1,
+        _LEARNING_V2,
+        _LEARNING_V3,
+        _LEARNING_V4,
+        _LEARNING_V5,
+        _LEARNING_V6,
+    )
 
 
 __all__ = ["CatalogStore", "LearningStore", "UnsupportedSchemaVersion"]

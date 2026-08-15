@@ -10,7 +10,10 @@
 #     This file is `podman-compose` 1.5+ compatible.
 #   * Verify with:  `podman compose version` and  `podman info | grep -i rootless`
 #
-# Bring up (this file lives next to docker-compose.yml, so always pass -f):
+# Build and bring up (this fork has no published image yet):
+#   podman build --target production -t deeptutor:tjm-local .
+#
+# This file lives next to docker-compose.yml, so always pass -f:
 #   cp .env.example .env       # then edit
 #   podman compose -f compose.yaml up -d
 #   podman compose -f compose.yaml ps
@@ -118,9 +121,9 @@ services:
   # the supervisord children's environment, so changing ports/auth/providers
   # means editing JSONs + `podman compose restart`.
   deeptutor:
-    image: ghcr.io/hkuds/deeptutor:latest
+    image: ${DEEPTUTOR_IMAGE:-deeptutor:tjm-local}
     container_name: deeptutor
-    pull_policy: always
+    pull_policy: ${DEEPTUTOR_PULL_POLICY:-never}
     restart: unless-stopped
     userns_mode: keep-id
     read_only: true

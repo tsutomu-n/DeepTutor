@@ -1261,7 +1261,9 @@ def test_voice_candidate_requires_explicit_confirmation_before_answer_changes(
     assert events[-1]["option_key"] == "B"
 
 
-def test_voice_candidate_is_fail_closed_for_ambiguous_or_stale_transcript(tmp_path: Path) -> None:
+def test_voice_candidate_is_fail_closed_for_ambiguous_but_not_blocked_by_late_candidate(
+    tmp_path: Path,
+) -> None:
     catalog = _catalog(tmp_path)
     _activate(catalog)
     service = AttemptService(catalog, LearningStore(tmp_path / "alice.db"), owner_id="u_alice")
@@ -1284,14 +1286,30 @@ def test_voice_candidate_is_fail_closed_for_ambiguous_or_stale_transcript(tmp_pa
     old = service.record_voice_candidate(
         attempt["id"], position=0, transcript="1番", elapsed_ms=400
     )
-    service.record_voice_candidate(attempt["id"], position=0, transcript="2番", elapsed_ms=500)
-    with pytest.raises(InvalidTransitionError, match="latest"):
+    late = service.record_voice_candidate(
+        attempt["id"], position=0, transcript="2番", elapsed_ms=500
+    )
+    confirmed = service.confirm_voice_candidate(
+        attempt["id"],
+        position=0,
+        candidate_id=old["candidate_id"],
+        confidence=50,
+        elapsed_ms=600,
+    )
+    assert confirmed["confirmed_option_key"] == "A"
+    assert (
+        service.cancel_voice_candidate(
+            attempt["id"], position=0, candidate_id=late["candidate_id"]
+        )["status"]
+        == "cancelled"
+    )
+    with pytest.raises(InvalidTransitionError, match="already resolved"):
         service.confirm_voice_candidate(
             attempt["id"],
             position=0,
             candidate_id=old["candidate_id"],
             confidence=50,
-            elapsed_ms=600,
+            elapsed_ms=700,
         )
 
 

@@ -20,6 +20,7 @@
     "audit": "playwright test --project=ui-audit",
     "audit:ui": "playwright test --ui --project=ui-audit",
     "audit:report": "playwright show-report",
+    "test:e2e:tjm": "node ./scripts/run-tjm-e2e.mjs",
     "build:brand-icons": "tsx ./scripts/build-brand-icons.mts",
     "voice:assets": "node ./scripts/copy-vad-assets.mjs"
   },
@@ -62,5 +63,17 @@
     "simple-icons": "^16.27.1",
     "tailwindcss": "^3.4.17",
     "typescript": "^5"
+  },
+  "overrides": {
+    "next": {
+      "postcss": "$postcss",
+      "sharp": "0.35.3"
+    },
+    "exceljs": {
+      "uuid": "11.1.1"
+    },
+    "eslint-config-next": {
+      "eslint-plugin-react-hooks": "7.0.1"
+    }
   }
 }

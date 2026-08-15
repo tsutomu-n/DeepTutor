@@ -10,29 +10,33 @@ function source(relativePath: string): string {
 test("TJM workspace exposes every required user and human-review surface", () => {
   const workspace = source("components/tjm/TjmWorkspace.tsx");
   for (const contract of [
-    "Practice",
-    "Timed exam",
-    "Confidence before seeing the result",
-    "Confirm answer",
-    "Review ledger",
-    "Accuracy by area",
-    "Question import",
-    "Human review queue",
-    "Mark reviewed",
-    "Publish",
-    "Invalidate content",
-    "Historical raw score",
-    "Content invalidated",
+    "exam.start.practice",
+    "exam.start.timed",
+    "attempt.confidence.label",
+    "attempt.answer.confirm",
+    "review.ledger.title",
+    "analytics.area.title",
+    "admin.import.title",
+    "admin.review.title",
+    "admin.review.action.markReviewed",
+    "admin.review.action.publish",
+    "admin.review.action.invalidate",
+    "result.rawScore",
+    "attempt.contentInvalidated",
   ]) {
     assert.match(workspace, new RegExp(contract));
   }
+  assert.match(workspace, /tjmText/);
+  assert.match(workspace, /tjmCodeText/);
+  assert.match(workspace, /<main[^>]+lang=\{TJM_LOCALE\}/s);
+  assert.doesNotMatch(workspace, /eslint-disable i18n\/no-literal-ui-text/);
   assert.match(workspace, /sessionStorage/);
   assert.match(workspace, /ConfirmDialog/);
   assert.match(workspace, /aria-live="polite"/);
   assert.match(workspace, /openTjmAttemptItem/);
   assert.match(workspace, /TjmCommandLedger/);
   assert.match(workspace, /shouldRefreshExpiredTjmAttempt/);
-  assert.match(workspace, /Change answer/);
+  assert.match(workspace, /attempt\.answer\.change/);
   assert.doesNotMatch(
     workspace,
     /selected_option_key\s*===\s*correct_option_key/,
@@ -42,12 +46,12 @@ test("TJM workspace exposes every required user and human-review surface", () =>
 test("TJM workspace separates official results from personal targets without exam-specific defaults", () => {
   const workspace = source("components/tjm/TjmWorkspace.tsx");
   for (const contract of [
-    "Official passing score",
-    "Practice target",
-    "Official result",
-    "Personal target result",
-    "Clear target",
-    "Scoring source",
+    "exam.field.officialScore",
+    "exam.field.practiceTarget",
+    "result.dimension.official",
+    "result.dimension.practice",
+    "exam.target.clear",
+    "exam.scoringSource",
   ]) {
     assert.match(workspace, new RegExp(contract));
   }
@@ -65,4 +69,24 @@ test("TJM has a utility page and a first-class sidebar route", () => {
   const sidebar = source("components/sidebar/SidebarShell.tsx");
   assert.match(sidebar, /href: ["']\/tjm["']/);
   assert.match(sidebar, /label: ["']TJM Exam Studio["']/);
+});
+
+test("TJM supplies fixed Japanese close copy without changing shared dialog defaults", () => {
+  const dialog = source("components/ui/ConfirmDialog.tsx");
+  assert.match(dialog, /closeLabel\?: string/);
+  assert.match(dialog, /resolvedCloseLabel/);
+  assert.match(dialog, /aria-label=\{resolvedCloseLabel\}/);
+
+  const workspace = source("components/tjm/TjmWorkspace.tsx");
+  assert.equal(
+    workspace.match(/closeLabel=\{tjmText\(["']common\.close["']\)\}/g)?.length,
+    2,
+  );
+});
+
+test("TJM TTS controls are mutually exclusive while audio is loading or speaking", () => {
+  const workspace = source("components/tjm/TjmWorkspace.tsx");
+  assert.match(workspace, /voice\.state === 'loading'/);
+  assert.match(workspace, /voice\.state === 'speaking'/);
+  assert.match(workspace, /attempt\.read\.result/);
 });

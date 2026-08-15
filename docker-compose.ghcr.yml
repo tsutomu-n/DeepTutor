@@ -1,14 +1,15 @@
 # ============================================
 # DeepTutor Docker Compose — Pre-built GHCR Image
 # ============================================
-# Run DeepTutor using the official pre-built image from GitHub Container Registry.
-# No local build required — the image is pulled automatically.
+# Run this fork using its pre-built image from GitHub Container Registry.
+# No local build is required after the fork publishes a release image.
 #
 # Usage:
 #   python scripts/docker_compose.py -f docker-compose.ghcr.yml up -d
 #
 # To pin a specific version:
-#   Edit the image tag below, e.g. ghcr.io/hkuds/deeptutor:1.0.0
+#   DEEPTUTOR_IMAGE=ghcr.io/tsutomu-n/deeptutor:1.5.8 \
+#     python scripts/docker_compose.py -f docker-compose.ghcr.yml up -d
 #
 # Prerequisites:
 #   1. Configure providers in data/user/settings/model_catalog.json or the UI
@@ -22,35 +23,35 @@
 # ============================================
 # IMPORTANT: Frontend-to-Backend API URL
 # ============================================
-# The frontend (Next.js) runs entirely in the user's browser — not in the container.
-# This means "localhost" in the browser refers to the USER'S MACHINE, not the Docker host.
+# The browser talks to the Next.js frontend origin. The Next.js server in this
+# container proxies /api/* and /ws/* to FastAPI, so a normal single-container
+# deployment does not require a public API base URL.
 #
 # LOCAL deployment (Docker on the same machine you browse from):
-#   Leave system.next_public_api_base_external blank. The default http://localhost:8001 works
-#   because Docker maps port 8001 from the container to your local machine.
+#   Open the published frontend port (3782 by default). Port 8001 is published
+#   for direct API clients and compatibility, but the browser UI does not need it.
 #
 # REMOTE SERVER deployment (Docker on a server, accessed from another machine):
-#   Set system.next_public_api_base_external to your server's public IP or hostname, e.g.:
-#     "next_public_api_base_external": "http://203.0.113.10:8001"
-#   Without this, the browser will try to reach localhost:8001 on the USER'S laptop
-#   (not the server), and all API calls will fail.
+#   Point the reverse proxy/TLS endpoint at the frontend port. When auth is
+#   enabled, add that exact frontend origin to cors_origins. Configure
+#   next_public_api_base only for a split deployment whose backend is on a
+#   separate container or host.
 # ============================================
 
 services:
   deeptutor:
-    image: ghcr.io/hkuds/deeptutor:latest
+    image: ${DEEPTUTOR_IMAGE:-ghcr.io/tsutomu-n/deeptutor:latest}
     pull_policy: always
     container_name: deeptutor
     restart: unless-stopped
     ports:
-      - "${DEEPTUTOR_DOCKER_BACKEND_PORT:-8001}:${DEEPTUTOR_DOCKER_BACKEND_PORT:-8001}"
-      - "${DEEPTUTOR_DOCKER_FRONTEND_PORT:-3782}:${DEEPTUTOR_DOCKER_FRONTEND_PORT:-3782}"
+      - "${DEEPTUTOR_DOCKER_BIND_HOST:-127.0.0.1}:${DEEPTUTOR_DOCKER_BACKEND_PORT:-8001}:${DEEPTUTOR_DOCKER_BACKEND_PORT:-8001}"
+      - "${DEEPTUTOR_DOCKER_BIND_HOST:-127.0.0.1}:${DEEPTUTOR_DOCKER_FRONTEND_PORT:-3782}:${DEEPTUTOR_DOCKER_FRONTEND_PORT:-3782}"
 
     volumes:
-      # Persistent data (created automatically on first start)
-      - ./data/user:/app/data/user
-      - ./data/memory:/app/data/memory
-      - ./data/knowledge_bases:/app/data/knowledge_bases
+      # One backup/restore boundary for settings, the shared TJM catalog, every
+      # user's learning history, memory, workspaces, and knowledge bases.
+      - ./data:/app/data
 
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:${DEEPTUTOR_DOCKER_BACKEND_PORT:-8001}/"]
