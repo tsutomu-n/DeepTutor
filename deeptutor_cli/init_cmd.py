@@ -385,11 +385,13 @@ def run_init(*, cli_only: bool = False, home: str | Path | None = None) -> None:
     os.environ[DEEPTUTOR_HOME_ENV] = str(runtime_home)
     _reset_runtime_singletons()
 
+    from deeptutor.logging import configure_logging
     from deeptutor.runtime.banner import labels_for, print_banner, resolve_language
     from deeptutor.services.config import get_model_catalog_service, get_runtime_settings_service
     from deeptutor.services.setup import init_user_directories
 
     init_user_directories(runtime_home)
+    configure_logging(force=True)
 
     language = resolve_language()
     strings = labels_for(language)

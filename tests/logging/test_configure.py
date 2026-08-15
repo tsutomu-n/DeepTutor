@@ -21,6 +21,28 @@ def _flush_root_handlers() -> None:
         handler.flush()
 
 
+def test_logging_config_follows_runtime_home_selected_after_import(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config_module = importlib.import_module("deeptutor.logging.config")
+    services_config = importlib.import_module("deeptutor.services.config")
+    runtime_home = tmp_path / "runtime-home"
+    assert services_config.PROJECT_ROOT != runtime_home
+    settings_dir = runtime_home / "data" / "user" / "settings"
+    settings_dir.mkdir(parents=True)
+    (settings_dir / "main.yaml").write_text(
+        "logging:\n  level: ERROR\n  console_output: false\n  save_to_file: false\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DEEPTUTOR_HOME", str(runtime_home))
+
+    loaded = config_module.load_logging_config()
+
+    assert loaded.level == "ERROR"
+    assert loaded.console_output is False
+    assert loaded.file_output is False
+
+
 def test_configure_logging_writes_jsonl_and_respects_level(monkeypatch, tmp_path: Path):
     configure_module = importlib.import_module("deeptutor.logging.configure")
     monkeypatch.setattr(

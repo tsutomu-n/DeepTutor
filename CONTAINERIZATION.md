@@ -1,18 +1,20 @@
 # DeepTutor Containerization
 
+更新: 2026-08-15_11:23 (Asia/Tokyo)
+
 This document covers deploying DeepTutor from a container image: the
 recommended `docker run` path, the hardened rootless-Podman path with a
 read-only root filesystem, runtime configuration, the optional PocketBase
 sidecar, and the security notes that motivate the default posture.
 
-For PyPI / source installs, see the main [README.md](../README.md). This
-file is only about running the published image.
+For PyPI / source installs, see the main [README.md](README.md). This
+file is only about running the full application image.
 
 ---
 
 ## Overview
 
-The published `ghcr.io/hkuds/deeptutor` image runs both the FastAPI
+The TJM fork image runs both the FastAPI
 backend (`:8001`) and the Next.js frontend (`:3782`) under `supervisord`
 inside a single container, on top of `python:3.11-slim`. There is one
 data tree (`/app/data` inside the container) that holds settings,
@@ -56,13 +58,16 @@ The full per-installation guide follows.
 ## Docker (default)
 
 The simplest possible deployment. One container, one volume, two port
-mappings.
+mappings. The fork image is not published yet, so build the current branch
+locally. After a maintainer publishes a release, you may instead use the
+explicit `ghcr.io/tsutomu-n/deeptutor:<release-tag>` image.
 
 ```bash
+docker build --target production -t deeptutor:tjm-local .
 docker run --rm --name deeptutor \
   -p 127.0.0.1:3782:3782 \
   -v deeptutor-data:/app/data \
-  ghcr.io/hkuds/deeptutor:latest
+  deeptutor:tjm-local
 ```
 
 Open <http://127.0.0.1:3782>. The container creates
@@ -140,7 +145,7 @@ docker run --rm --name deeptutor \
   -p 127.0.0.1:3782:3782 -p 127.0.0.1:8001:8001 \
   --add-host=host.docker.internal:host-gateway \
   -v deeptutor-data:/app/data \
-  ghcr.io/hkuds/deeptutor:latest
+  deeptutor:tjm-local
 ```
 
 Then in **Settings → Models**, point the provider Base URL at
@@ -173,11 +178,13 @@ to loopback breaks the published `-p` port forward.
 
 For users who want the strongest default posture — rootless, with a
 read-only root filesystem — `compose.yaml` is the supported starting
-point. It pulls the same `ghcr.io/hkuds/deeptutor:latest` image and
-relies on the entrypoint chown + supervisord's per-program privilege drop,
+point. It uses the locally built `deeptutor:tjm-local` image by default and
+can be pointed at an explicit fork release tag after publication. It relies
+on the entrypoint chown + supervisord's per-program privilege drop,
 the URL-forwarding `proxy.ts`, and host-side bind mounts to make it all work.
 
 ```bash
+podman build --target production -t deeptutor:tjm-local .
 cp .env.example .env       # then edit if needed
 podman compose -f compose.yaml up -d
 podman compose -f compose.yaml ps
@@ -235,7 +242,7 @@ podman run --rm -d --name deeptutor \
   --tmpfs /root:size=16m,mode=0700 \
   --tmpfs /home:size=16m,mode=0755 \
   --userns=keep-id \
-  ghcr.io/hkuds/deeptutor:latest
+  deeptutor:tjm-local
 ```
 
 After the container is up, the backend and frontend always run as the
@@ -351,8 +358,9 @@ directory you own, or use `:U` on the volume mount.
 
 **`sed -i` errors on a fresh image.** There shouldn't be any — the
 runtime no longer mutates the bundle. The URL is forwarded at request
-time. If you see one, you are probably on an older image; pull
-`ghcr.io/hkuds/deeptutor:latest` again.
+time. If you see one, you are probably on an older image; rebuild
+`deeptutor:tjm-local` from the current branch or pull an explicit published
+fork release tag.
 
 **Settings page won't accept the API base URL.** Open
 `data/user/settings/system.json` on the host and set

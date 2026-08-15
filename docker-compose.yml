@@ -29,7 +29,7 @@ services:
     container_name: pocketbase
     restart: unless-stopped
     ports:
-      - "${DEEPTUTOR_DOCKER_POCKETBASE_PORT:-8090}:8090"
+      - "${DEEPTUTOR_DOCKER_BIND_HOST:-127.0.0.1}:${DEEPTUTOR_DOCKER_POCKETBASE_PORT:-8090}:8090"
     volumes:
       # The upstream pocketbase image's entrypoint uses absolute paths
       # (no /pb/ prefix): --dir=/pb_data --publicDir=/pb_public
@@ -59,8 +59,8 @@ services:
     container_name: deeptutor
     restart: unless-stopped
     ports:
-      - "${DEEPTUTOR_DOCKER_BACKEND_PORT:-8001}:${DEEPTUTOR_DOCKER_BACKEND_PORT:-8001}"
-      - "${DEEPTUTOR_DOCKER_FRONTEND_PORT:-3782}:${DEEPTUTOR_DOCKER_FRONTEND_PORT:-3782}"
+      - "${DEEPTUTOR_DOCKER_BIND_HOST:-127.0.0.1}:${DEEPTUTOR_DOCKER_BACKEND_PORT:-8001}:${DEEPTUTOR_DOCKER_BACKEND_PORT:-8001}"
+      - "${DEEPTUTOR_DOCKER_BIND_HOST:-127.0.0.1}:${DEEPTUTOR_DOCKER_FRONTEND_PORT:-3782}:${DEEPTUTOR_DOCKER_FRONTEND_PORT:-3782}"
 
     volumes:
       # Everything DeepTutor persists lives under ./data — one tree to mount

@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from deeptutor.runtime.home import get_runtime_home
+
 
 @dataclass(frozen=True)
 class LoggingConfig:
@@ -26,12 +28,11 @@ def load_logging_config() -> LoggingConfig:
     """Load logging settings from ``data/user/settings/main.yaml``."""
     try:
         from deeptutor.services.config import (
-            PROJECT_ROOT,
             get_path_from_config,
             load_config_with_main,
         )
 
-        config = load_config_with_main("main.yaml", PROJECT_ROOT)
+        config = load_config_with_main("main.yaml", get_runtime_home())
         logging_config = config.get("logging", {}) or {}
         return LoggingConfig(
             level=str(logging_config.get("level", "INFO")).upper(),

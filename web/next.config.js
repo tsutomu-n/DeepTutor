@@ -109,6 +109,27 @@ const nextConfig = {
   // This eliminates the need to copy the full node_modules into Docker production images
   output: "standalone",
 
+  // The full app ships this standalone server inside a py3-none-any wheel and
+  // Docker builds it once on BUILDPLATFORM. Runtime image optimization pulls
+  // Sharp/libvips native binaries into that artifact, making both portability
+  // claims false. The UI uses small local logos/avatars, so serve their source
+  // files directly and keep the packaged runtime architecture-neutral.
+  images: {
+    unoptimized: true,
+  },
+
+  // `unoptimized` prevents application routes from using the image optimizer,
+  // but Next still traces its optional Sharp runtime by default. Exclude that
+  // unreachable native payload so the standalone server remains portable. The
+  // packaging gate independently rejects any native file that is traced later.
+  outputFileTracingExcludes: {
+    "*": [
+      "node_modules/sharp/**/*",
+      "node_modules/@img/sharp-*/**/*",
+      "node_modules/@img/sharp-libvips-*/**/*",
+    ],
+  },
+
   // web/proxy.ts (the Next.js middleware) forwards /api/* and /ws/* to the
   // backend by buffering and re-issuing the request. Next caps the buffered
   // request body at 10MB by default, but the backend accepts uploads up to

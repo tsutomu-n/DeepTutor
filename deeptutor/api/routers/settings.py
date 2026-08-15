@@ -27,7 +27,10 @@ from deeptutor.services.config import (
     get_model_catalog_service,
     get_runtime_settings_service,
 )
-from deeptutor.services.config.origins import normalize_origins
+from deeptutor.services.config.origins import (
+    find_unsafe_credentialed_origins,
+    normalize_origins,
+)
 from deeptutor.services.config.runtime_settings import (
     CHAT_ATTACHMENT_CHARS_RANGE,
     CHAT_ATTACHMENT_MAX_FILE_MB_RANGE,
@@ -581,6 +584,13 @@ async def get_network_settings():
 async def update_network_settings(payload: NetworkSettingsUpdate):
     _require_settings_admin()
     service = get_runtime_settings_service()
+    cors_origins = normalize_origins(payload.cors_origins)
+    auth = service.load_auth(include_process_overrides=True)
+    if auth["enabled"] and find_unsafe_credentialed_origins(cors_origins):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=("Authentication-enabled credentialed CORS requires concrete HTTP(S) origins"),
+        )
     current = service.load_system(include_process_overrides=False)
     service.save_system(
         {
@@ -589,7 +599,7 @@ async def update_network_settings(payload: NetworkSettingsUpdate):
             "frontend_port": payload.frontend_port,
             "next_public_api_base_external": payload.public_api_base.strip(),
             "cors_origin": "",
-            "cors_origins": normalize_origins(payload.cors_origins),
+            "cors_origins": cors_origins,
         }
     )
     return _network_settings_payload()

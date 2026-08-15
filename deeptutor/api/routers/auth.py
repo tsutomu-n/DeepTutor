@@ -3,6 +3,7 @@
 from contextvars import Token as _CtxToken
 import logging
 import re
+from urllib.parse import urlsplit
 
 from fastapi import (
     APIRouter,
@@ -20,7 +21,8 @@ from fastapi import (
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, field_validator
 
-from deeptutor.services.config import load_auth_settings
+from deeptutor.services.config import load_auth_settings, load_system_settings
+from deeptutor.services.config.origins import browser_allowed_origins
 
 # SameSite=None lets the cookie work when the browser accesses the frontend via
 # 127.0.0.1 and the backend via localhost (different origins on the same machine).
@@ -337,14 +339,85 @@ async def require_admin(
     the event loop and the user ContextVar set by ``require_auth`` is visible
     to the endpoint.
     """
+    return _require_admin_payload(payload)
+
+
+def _require_admin_payload(payload: TokenPayload | None) -> TokenPayload:
     if not AUTH_ENABLED:
         return _local_admin_token_payload()
+    if payload is not None and payload.role == "admin":
+        return payload
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Admin access required",
+    )
 
-    if payload is None or payload.role != "admin":
+
+def _is_strict_http_origin(value: str) -> bool:
+    """Reject wildcard, opaque, credentialed, and path-bearing origins."""
+    try:
+        parsed = urlsplit(value)
+        _ = parsed.port
+    except ValueError:
+        return False
+    return bool(
+        parsed.scheme in {"http", "https"}
+        and parsed.hostname
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.path
+        and not parsed.query
+        and not parsed.fragment
+        and value == f"{parsed.scheme}://{parsed.netloc}"
+    )
+
+
+def _write_allowed_origins() -> frozenset[str]:
+    return frozenset(
+        origin
+        for origin in browser_allowed_origins(load_system_settings())
+        if _is_strict_http_origin(origin)
+    )
+
+
+def _request_header_values(request: Request, header_name: bytes) -> list[str]:
+    return [
+        value.decode("latin-1")
+        for name, value in request.scope.get("headers", [])
+        if name.lower() == header_name
+    ]
+
+
+async def require_authenticated_write_same_origin(
+    request: Request,
+    payload: TokenPayload | None = Depends(require_auth),
+    dt_token: str | None = Cookie(default=None),
+) -> TokenPayload | None:
+    """Protect cookie-authenticated writes against cross-site requests.
+
+    A single validated Bearer credential is not ambient browser authority and
+    therefore does not require an Origin. Cookie-only requests must carry one
+    exact, concrete Origin from the same allowlist used by CORS.
+    """
+    if not AUTH_ENABLED or dt_token is None:
+        return payload
+    authorizations = _request_header_values(request, b"authorization")
+    if len(authorizations) == 1 and _bearer_token_from_header(authorizations[0]) is not None:
+        return payload
+    origins = _request_header_values(request, b"origin")
+    if len(origins) != 1 or origins[0] not in _write_allowed_origins():
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin access required",
+            detail="Request origin is not allowed",
         )
+    return payload
+
+
+async def require_admin_same_origin(
+    payload: TokenPayload = Depends(require_admin),
+    _: TokenPayload | None = Depends(require_authenticated_write_same_origin),
+) -> TokenPayload:
+    """Require both the cookie-write Origin contract and the admin role."""
     return payload
 
 

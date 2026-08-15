@@ -129,6 +129,10 @@ class PathService:
     def get_chat_history_db(self) -> Path:
         return self._user_data_dir / "chat_history.db"
 
+    def get_tjm_learning_db(self) -> Path:
+        """Per-user TJM attempts, answers, review queue, and analytics source."""
+        return self._user_data_dir / "tjm_learning.db"
+
     def get_public_outputs_root(self) -> Path:
         return self._user_data_dir
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -240,3 +241,8 @@ def test_start_command_delegates_to_runtime_launcher(monkeypatch) -> None:
 
     assert result.exit_code == 0, result.output
     assert calls[-1] == (None, True)
+
+    result = runner.invoke(app, ["start", "--home", "/tmp/deeptutor-cli-test-home"])
+
+    assert result.exit_code == 0, result.output
+    assert calls[-1] == (Path("/tmp/deeptutor-cli-test-home"), False)

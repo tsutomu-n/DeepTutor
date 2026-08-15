@@ -13,7 +13,10 @@ from deeptutor.services.config import (
     load_auth_settings,
     load_system_settings,
 )
-from deeptutor.services.config.origins import normalize_origins
+from deeptutor.services.config.origins import (
+    browser_allowed_origins,
+    find_unsafe_credentialed_origins,
+)
 from deeptutor.services.path_service import get_path_service
 
 ensure_runtime_settings_files()
@@ -86,19 +89,15 @@ def _build_cors_settings() -> dict[str, object]:
     """Build CORS settings for both localhost and remote Docker deployments."""
     system_settings = load_system_settings()
     auth_settings = load_auth_settings()
-    frontend_port = str(system_settings["frontend_port"])
-    extra_origins = normalize_origins(
-        [system_settings["cors_origin"], system_settings["cors_origins"]]
+    unsafe_credentialed_origins = find_unsafe_credentialed_origins(
+        [system_settings.get("cors_origin"), system_settings.get("cors_origins")]
     )
-    origins = [
-        f"http://localhost:{frontend_port}",
-        f"http://127.0.0.1:{frontend_port}",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ]
-    for origin in extra_origins:
-        if origin not in origins:
-            origins.append(origin)
+    if auth_settings["enabled"] and unsafe_credentialed_origins:
+        raise ValueError(
+            "Authentication-enabled credentialed CORS requires concrete HTTP(S) origins; "
+            f"remove {unsafe_credentialed_origins!r} from CORS_ORIGIN(S)"
+        )
+    origins = browser_allowed_origins(system_settings)
 
     # Auth is disabled by default. In that local/single-user mode, mirror the
     # pre-v1.3.8 behavior and allow remote Docker/LAN origins out of the box.
@@ -361,6 +360,7 @@ from deeptutor.api.routers import (
     space_mcp,
     subagents,
     system,
+    tjm,
     unified_ws,
     voice,
 )
@@ -467,6 +467,7 @@ app.include_router(
 )
 app.include_router(tools_router.router, prefix="/api/v1/tools", tags=["tools"], dependencies=_auth)
 app.include_router(system.router, prefix="/api/v1/system", tags=["system"], dependencies=_auth)
+app.include_router(tjm.router, prefix="/api/v1/tjm", tags=["tjm"], dependencies=_auth)
 app.include_router(voice.router, prefix="/api/v1/voice", tags=["voice"], dependencies=_auth)
 app.include_router(
     plugins_api.router, prefix="/api/v1/plugins", tags=["plugins"], dependencies=_auth

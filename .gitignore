@@ -92,6 +92,8 @@ dist/
 web/dist/
 build/
 web/build/
+# Generated from pinned npm packages by web/scripts/copy-vad-assets.mjs.
+web/public/vad/
 .open-next/
 **/.open-next/
 .wrangler/
@@ -126,6 +128,8 @@ cache/
 .cache/
 .ruff_cache
 .playwright-cli/
+playwright-report/
+test-results/
 
 # Log files
 *.log

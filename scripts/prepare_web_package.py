@@ -5,12 +5,40 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import re
 import shutil
 import subprocess
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 WEB_DIR = PROJECT_ROOT / "web"
 PACKAGE_DIR = PROJECT_ROOT / "deeptutor_web"
+
+
+def find_native_runtime_files(root: Path) -> list[Path]:
+    """Return platform-native files that would make the Web wheel non-universal."""
+    native_name = re.compile(r"(?:\.node|\.dll|\.dylib|\.exe|\.so(?:\.\d+)*)$", re.IGNORECASE)
+    return sorted(
+        path for path in root.rglob("*") if path.is_file() and native_name.search(path.name)
+    )
+
+
+def assert_portable_standalone(standalone: Path) -> None:
+    """Fail closed while the project publishes a ``py3-none-any`` wheel.
+
+    The packaged Next server runs on the user's Node runtime. Bundling a native
+    addon produced on the build host would make both that wheel and Docker's
+    BUILDPLATFORM frontend stage architecture-specific while still claiming to
+    be portable.
+    """
+    native_files = find_native_runtime_files(standalone)
+    if not native_files:
+        return
+    details = "\n".join(f"  - {path.relative_to(standalone)}" for path in native_files[:20])
+    raise SystemExit(
+        "Next standalone contains platform-native runtime files, but the full app wheel "
+        f"is declared py3-none-any:\n{details}\n"
+        "Remove the runtime-native dependency or publish correctly platform-tagged builds."
+    )
 
 
 def _clean_package_dir(package_dir: Path) -> None:
@@ -40,6 +68,7 @@ def prepare_web_package(*, skip_build: bool = False) -> None:
             "Missing web/.next/standalone/server.js. Run this script after `npm run build` "
             "or omit --skip-build."
         )
+    assert_portable_standalone(standalone)
 
     _clean_package_dir(PACKAGE_DIR)
     shutil.copytree(standalone, PACKAGE_DIR, dirs_exist_ok=True)

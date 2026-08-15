@@ -71,6 +71,86 @@ def test_compose_files_do_not_consume_legacy_env_names() -> None:
         assert "\n      - BACKEND_PORT" not in content
         assert "\n      - AUTH_ENABLED" not in content
         assert "DEEPTUTOR_DOCKER_BACKEND_PORT" in content
+        assert '"${DEEPTUTOR_DOCKER_BIND_HOST:-127.0.0.1}:' in content
+
+    development = (root / "docker-compose.dev.yml").read_text(encoding="utf-8")
+    assert "/pb/pb_data" not in development
+
+
+def test_ghcr_compose_uses_fork_image_and_persists_the_complete_data_root() -> None:
+    root = Path(__file__).resolve().parents[2]
+    content = (root / "docker-compose.ghcr.yml").read_text(encoding="utf-8")
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    readme_ja = (root / "assets/README/README_JA.md").read_text(encoding="utf-8")
+
+    assert "${DEEPTUTOR_IMAGE:-ghcr.io/tsutomu-n/deeptutor:latest}" in content
+    assert "ghcr.io/hkuds/deeptutor" not in content
+    assert "ghcr.io/hkuds/deeptutor" not in readme
+    assert "pip install -U deeptutor" not in readme
+    assert "git clone https://github.com/HKUDS/DeepTutor.git" not in readme
+    assert "ghcr.io/hkuds/deeptutor" not in readme_ja
+    assert "pip install -U deeptutor" not in readme_ja
+    assert "git clone https://github.com/HKUDS/DeepTutor.git" not in readme_ja
+    assert "runs entirely in the user's browser" not in content
+    assert "./data:/app/data" in content
+    assert "./data/user:/app/data/user" not in content
+    assert "./data/memory:/app/data/memory" not in content
+    assert "./data/knowledge_bases:/app/data/knowledge_bases" not in content
+
+    podman_compose = (root / "compose.yaml").read_text(encoding="utf-8")
+    container_guide = (root / "CONTAINERIZATION.md").read_text(encoding="utf-8")
+    assert "ghcr.io/hkuds/deeptutor" not in podman_compose
+    assert "ghcr.io/hkuds/deeptutor" not in container_guide
+    assert "${DEEPTUTOR_IMAGE:-deeptutor:tjm-local}" in podman_compose
+
+
+def test_release_workflows_fail_closed_before_external_publication() -> None:
+    root = Path(__file__).resolve().parents[2]
+    docker_release = (root / ".github/workflows/docker-release.yml").read_text(encoding="utf-8")
+    pypi_release = (root / ".github/workflows/pypi-release.yml").read_text(encoding="utf-8")
+
+    assert "ghcr.io/hkuds/deeptutor" not in docker_release
+    assert "images: ghcr.io/${{ github.repository }}" in docker_release
+    assert "vars.ENABLE_DOCKER_RELEASE == 'true'" in docker_release
+    assert "Verify release tag is on main" in docker_release
+    assert "Verify release tag matches DeepTutor version" in docker_release
+    assert "Test Summary" in docker_release
+    assert "TJM Docker Pre-release Preflight (linux/arm64 via QEMU)" in docker_release
+    assert "flavor: latest=false" in docker_release
+    assert "github.event.release.prerelease == false" in docker_release
+    assert "github.event.release.prerelease == true" in docker_release
+    assert "vars.ENABLE_PYPI_RELEASE == 'true'" in pypi_release
+    assert "checks: read" in pypi_release
+    assert "Verify release commit acceptance checks" in pypi_release
+    assert "commits/${tag_commit}/check-runs" in pypi_release
+    assert 'required_checks=(\n            "Test Summary"\n          )' in pypi_release
+    assert "Refuse an existing PyPI version" in pypi_release
+    assert "scripts/validate_tjm_wheel.py" in pypi_release
+    assert "scripts/tjm_distribution_smoke.py launcher" in pypi_release
+    assert pypi_release.index("Verify release commit acceptance checks") < pypi_release.index(
+        "Publish deeptutor to PyPI"
+    )
+
+
+def test_tests_workflow_validates_all_supported_compose_surfaces() -> None:
+    root = Path(__file__).resolve().parents[2]
+    workflow = (root / ".github/workflows/tests.yml").read_text(encoding="utf-8")
+
+    for path_filter in (
+        '"compose.yaml"',
+        '"CONTAINERIZATION.md"',
+        '"assets/README/**"',
+    ):
+        assert workflow.count(path_filter) == 2
+
+    assert "name: Docker Compose Configuration" in workflow
+    assert "docker compose -f docker-compose.yml config --quiet" in workflow
+    assert (
+        "docker compose -f docker-compose.yml -f docker-compose.dev.yml config --quiet" in workflow
+    )
+    assert "docker compose -f docker-compose.ghcr.yml config --quiet" in workflow
+    assert "docker compose -f compose.yaml config --quiet" in workflow
+    assert "needs.compose-config.result != 'success'" in workflow
 
 
 def test_dockerfile_is_json_driven_without_bundle_sed() -> None:

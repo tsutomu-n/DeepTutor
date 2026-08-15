@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import builtins
+import os
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,33 @@ from deeptutor.runtime import launcher
 class _FakeTty:
     def isatty(self) -> bool:
         return True
+
+
+def test_start_configures_logging_only_after_explicit_home_is_active(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_home = tmp_path / "runtime-home"
+    calls: list[bool] = []
+
+    class LoggingConfigured(Exception):
+        pass
+
+    def fake_configure_logging(*, force: bool = False) -> None:
+        assert force is True
+        assert Path(os.environ["DEEPTUTOR_HOME"]) == runtime_home
+        assert (runtime_home / "data" / "user").is_dir()
+        settings_dir = runtime_home / "data" / "user" / "settings"
+        assert (settings_dir / "system.json").is_file()
+        assert (settings_dir / "model_catalog.json").is_file()
+        calls.append(force)
+        raise LoggingConfigured
+
+    monkeypatch.setattr("deeptutor.logging.configure_logging", fake_configure_logging)
+
+    with pytest.raises(LoggingConfigured):
+        launcher.start(home=runtime_home)
+
+    assert calls == [True]
 
 
 def test_packaged_web_cache_replaces_next_public_placeholders(tmp_path: Path) -> None:

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
+import pytest
 
 from deeptutor.api import main as api_main
 
@@ -37,6 +40,83 @@ def test_cors_requires_explicit_origins_when_auth_enabled(monkeypatch) -> None:
     assert "https://foo.example.com" in settings["allow_origins"]
     assert "https://bar.example.com" in settings["allow_origins"]
     assert settings["allow_origins"].count("https://foo.example.com") == 1
+
+
+@pytest.mark.parametrize("unsafe_origin", ["*", "null"])
+def test_cors_rejects_credentialed_wildcard_or_opaque_origin(
+    monkeypatch,
+    unsafe_origin: str,
+) -> None:
+    monkeypatch.setattr(api_main, "load_auth_settings", lambda: {"enabled": True})
+    monkeypatch.setattr(
+        api_main,
+        "load_system_settings",
+        lambda: {
+            "frontend_port": 3782,
+            "cors_origin": unsafe_origin,
+            "cors_origins": ["https://learn.example.com"],
+        },
+    )
+
+    with pytest.raises(ValueError, match="credentialed CORS"):
+        api_main._build_cors_settings()
+
+
+def test_auth_enabled_cors_middleware_does_not_echo_unlisted_cookie_origin(
+    monkeypatch,
+) -> None:
+    allowed_origin = "https://learn.example.com"
+    monkeypatch.setattr(api_main, "load_auth_settings", lambda: {"enabled": True})
+    monkeypatch.setattr(
+        api_main,
+        "load_system_settings",
+        lambda: {
+            "frontend_port": 3782,
+            "cors_origin": allowed_origin,
+            "cors_origins": [],
+        },
+    )
+    settings = api_main._build_cors_settings()
+    app = FastAPI()
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings["allow_origins"],
+        allow_origin_regex=settings["allow_origin_regex"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    @app.post("/write")
+    def write() -> dict[str, bool]:
+        return {"ok": True}
+
+    client = TestClient(app)
+    evil = client.post(
+        "/write",
+        json={"value": 1},
+        cookies={"dt_token": "secret"},
+        headers={"Origin": "https://evil.example.com"},
+    )
+    preflight = client.options(
+        "/write",
+        headers={
+            "Origin": "https://evil.example.com",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+    allowed = client.post(
+        "/write",
+        json={"value": 1},
+        cookies={"dt_token": "secret"},
+        headers={"Origin": allowed_origin},
+    )
+
+    assert "access-control-allow-origin" not in evil.headers
+    assert preflight.status_code == 400
+    assert "access-control-allow-origin" not in preflight.headers
+    assert allowed.headers["access-control-allow-origin"] == allowed_origin
 
 
 def test_cors_normalizes_common_origin_input_mistakes(monkeypatch) -> None:

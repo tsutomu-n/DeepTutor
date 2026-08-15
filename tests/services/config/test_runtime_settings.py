@@ -211,6 +211,22 @@ def test_startup_ensure_creates_missing_runtime_jsons_with_defaults(
     }
 
 
+def test_global_settings_dir_follows_runtime_home_selected_after_import(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from deeptutor.multi_user import paths as multi_user_paths
+    from deeptutor.services.config import runtime_settings as runtime_settings_module
+
+    runtime_home = tmp_path / "runtime-home"
+    assert multi_user_paths.PROJECT_ROOT != runtime_home
+
+    monkeypatch.setenv("DEEPTUTOR_HOME", str(runtime_home))
+
+    assert runtime_settings_module._global_settings_dir() == (
+        runtime_home / "data" / "user" / "settings"
+    )
+
+
 def test_mineru_defaults_and_normalization(tmp_path: Path) -> None:
     service = RuntimeSettingsService(tmp_path / "settings", process_env={})
 

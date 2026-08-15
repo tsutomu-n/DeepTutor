@@ -3,8 +3,10 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
+    "predev": "npm run voice:assets",
     "dev": "node ./scripts/dev.mjs",
     "dev:turbo": "node ./scripts/dev.mjs --turbopack",
+    "prebuild": "npm run voice:assets",
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
@@ -18,9 +20,12 @@
     "audit": "playwright test --project=ui-audit",
     "audit:ui": "playwright test --ui --project=ui-audit",
     "audit:report": "playwright show-report",
-    "build:brand-icons": "tsx ./scripts/build-brand-icons.mts"
+    "test:e2e:tjm": "node ./scripts/run-tjm-e2e.mjs",
+    "build:brand-icons": "tsx ./scripts/build-brand-icons.mts",
+    "voice:assets": "node ./scripts/copy-vad-assets.mjs"
   },
   "dependencies": {
+    "@ricky0123/vad-web": "^0.0.30",
     "chart.js": "^4.5.1",
     "clsx": "^2.1.1",
     "cytoscape": "^3.33.1",
@@ -31,8 +36,8 @@
     "i18next": "^25.8.0",
     "jspdf": "^4.2.0",
     "lucide-react": "^0.562.0",
-    "mermaid": "^11.14.0",
-    "next": "^16.2.3",
+    "mermaid": "^11.16.0",
+    "next": "^16.2.12",
     "react": "^19.0.0",
     "react-chartjs-2": "^5.3.1",
     "react-dom": "^19.0.0",
@@ -53,10 +58,22 @@
     "@types/react-syntax-highlighter": "^15.5.13",
     "autoprefixer": "^10.4.20",
     "eslint": "^9",
-    "eslint-config-next": "16.2.3",
+    "eslint-config-next": "^16.2.12",
     "postcss": "^8",
     "simple-icons": "^16.27.1",
     "tailwindcss": "^3.4.17",
     "typescript": "^5"
+  },
+  "overrides": {
+    "next": {
+      "postcss": "$postcss",
+      "sharp": "0.35.3"
+    },
+    "exceljs": {
+      "uuid": "11.1.1"
+    },
+    "eslint-config-next": {
+      "eslint-plugin-react-hooks": "7.0.1"
+    }
   }
 }

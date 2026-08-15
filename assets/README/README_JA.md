@@ -16,17 +16,12 @@
 
 <p align="center">
   <a href="../../README.md"><img alt="English" height="40" src="https://img.shields.io/badge/English-CDCFD4"></a>&nbsp;
-  <a href="README_CN.md"><img alt="简体中文" height="40" src="https://img.shields.io/badge/简体中文-CDCFD4"></a>&nbsp;
-  <a href="README_JA.md"><img alt="日本語" height="40" src="https://img.shields.io/badge/日本語-BCDCF7"></a>&nbsp;
-  <a href="README_ES.md"><img alt="Español" height="40" src="https://img.shields.io/badge/Español-CDCFD4"></a>&nbsp;
-  <a href="README_FR.md"><img alt="Français" height="40" src="https://img.shields.io/badge/Français-CDCFD4"></a>&nbsp;
-  <a href="README_AR.md"><img alt="Arabic" height="40" src="https://img.shields.io/badge/Arabic-CDCFD4"></a>&nbsp;
-  <a href="README_RU.md"><img alt="Русский" height="40" src="https://img.shields.io/badge/Русский-CDCFD4"></a>&nbsp;
-  <a href="README_HI.md"><img alt="Hindi" height="40" src="https://img.shields.io/badge/Hindi-CDCFD4"></a>&nbsp;
-  <a href="README_PT.md"><img alt="Português" height="40" src="https://img.shields.io/badge/Português-CDCFD4"></a>&nbsp;
-  <a href="README_TH.md"><img alt="Thai" height="40" src="https://img.shields.io/badge/Thai-CDCFD4"></a>&nbsp;
-  <a href="README_PL.md"><img alt="Polski" height="40" src="https://img.shields.io/badge/Polski-CDCFD4"></a>
+  <a href="README_JA.md"><img alt="日本語" height="40" src="https://img.shields.io/badge/日本語-BCDCF7"></a>
 </p>
+
+TJMフォークと同期しているガイドは英語版と日本語版だけです。その他の翻訳は
+上流版の履歴資料としてリポジトリに残していますが、このフォークのインストールや
+リリース手順には使用しないでください。
 
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![Next.js 16](https://img.shields.io/badge/Next.js-16-000000?style=flat-square&logo=next.js&logoColor=white)](https://nextjs.org/)
@@ -41,6 +36,8 @@
 [機能](#-主な機能) · [はじめに](#-はじめに) · [探索](#-deeptuitorを探索する) · [CLI](#%EF%B8%8F-deeptutor-cli--エージェントネイティブインターフェース) · [エコシステム](#-エコシステム--eduhubとスキルコミュニティ) · [コミュニティ](#-コミュニティ)
 
 </div>
+
+> TJM fork更新: 2026-08-15_11:23（Asia/Tokyo）
 
 ---
 
@@ -73,20 +70,9 @@ DeepTutorは、個別指導、問題解決、クイズ生成、研究、ビジ�
 DeepTutorは4つのインストールパスを提供しています。すべてのパスは同じワークスペースレイアウトを共有します。設定はデプロイするディレクトリ下の`data/user/settings/`に保存されます（明示的に設定した場合は`DEEPTUTOR_HOME`/`deeptutor start --home`の下）。完全なアプリの場合は **ワークスペースディレクトリの選択 → インストール → `deeptutor init` → `deeptutor start`** がお勧めのフローです。
 
 <details>
-<summary><b>オプション1 — PyPIからインストール</b> · クローン不要のフルローカルWebアプリ + CLI</summary>
+<summary><b>オプション1 — PyPIからインストール</b> · このTJM forkでは未公開</summary>
 
-クローン不要のフルローカルWebアプリ + CLI。**Python 3.11–3.13** とPATH上の**Node.js 20+**ランタイムが必要です（パッケージ済みのNext.jsスタンドアロンサーバーは`deeptutor start`によって起動されます）。
-
-```bash
-mkdir -p my-deeptutor && cd my-deeptutor
-pip install -U deeptutor
-deeptutor init     # ポート + LLMプロバイダー + オプション埋め込みを設定
-deeptutor start    # バックエンド + フロントエンドを起動; ターミナルを開いたまま
-```
-
-`deeptutor init`はバックエンドポート（デフォルト`8001`）、フロントエンドポート（デフォルト`3782`）、LLMプロバイダー / ベースURL / APIキー / モデル、およびKnowledge Base / RAG用のオプション埋め込みプロバイダーを設定します。
-
-`deeptutor start`後、ターミナルに出力されたフロントエンドURLを開いてください（デフォルトは[http://127.0.0.1:3782](http://127.0.0.1:3782)）。そのターミナルで`Ctrl+C`を押すとバックエンドとフロントエンドが両方停止します。手軽に試すために`deeptutor init`をスキップしても問題ありません。アプリはデフォルトのポートと空のモデル設定で起動し、後から**Settings → Models**で設定できます。
+公開中の[`deeptutor`](https://pypi.org/project/deeptutor/1.5.8/)は既存の上流packageで、TJMを含みません。このforkの検証済みwheelは未公開で、PyPI上のversion `1.5.8`も既に使用済みです。未使用versionと既存projectの公開権限を確認するか、fork固有のdistribution名を決めるまでは、次のソースインストールを使用してください。
 
 </details>
 
@@ -96,7 +82,7 @@ deeptutor start    # バックエンド + フロントエンドを起動; ター
 チェックアウトに対して開発する場合。CIとDockerに合わせて**Python 3.11–3.13**と**Node.js 22 LTS**を使用してください。
 
 ```bash
-git clone https://github.com/HKUDS/DeepTutor.git
+git clone --branch tjm/implementation --single-branch https://github.com/tsutomu-n/DeepTutor.git
 cd DeepTutor
 
 # venvを作成(macOS/Linux)。Windows PowerShell:
@@ -157,18 +143,16 @@ deeptutor start --dev
 <details>
 <summary><b>オプション3 — Docker</b> · 自己完結型コンテナ1つ</summary>
 
-フルWebアプリ用のコンテナ1つ。GitHub Container Registryのイメージ：
-
-- `ghcr.io/hkuds/deeptutor:latest` — 安定版リリース
-- `ghcr.io/hkuds/deeptutor:pre` — プレリリース（利用可能な場合）
+フルWebアプリ用のコンテナ1つ。このTJM forkのGHCR imageはまだ公開していないため、現在のbranchからlocal buildします。上流imageはTJMを含みません。
 
 > ポッドマン/rootless/読み取り専用rootfsデプロイメントと完全なインストール別ガイドについては [CONTAINERIZATION.md](../../CONTAINERIZATION.md) を参照してください。
 
 ```bash
+docker build --target production -t deeptutor:tjm-local .
 docker run --rm --name deeptutor \
   -p 127.0.0.1:3782:3782 \
   -v deeptutor-data:/app/data \
-  ghcr.io/hkuds/deeptutor:latest
+  deeptutor:tjm-local
 ```
 
 > **公開が必要なのは`3782`のみです。** ブラウザはフロントエンドオリジンのみと通信し、Next.jsミドルウェア（`web/proxy.ts`）が`/api/*`と`/ws/*`をコンテナ**内部の**FastAPIバックエンドに転送します。`8001`を公開（`-p 127.0.0.1:8001:8001`）するのはオプションで、curlやスクリプトでAPIに直接アクセスする場合にのみ便利です。
@@ -204,7 +188,7 @@ docker run --rm --name deeptutor \
   -p 127.0.0.1:3782:3782 -p 127.0.0.1:8001:8001 \
   --add-host=host.docker.internal:host-gateway \
   -v deeptutor-data:/app/data \
-  ghcr.io/hkuds/deeptutor:latest
+  deeptutor:tjm-local
 ```
 
 **Settings → Models**でプロバイダーのBase URLを`host.docker.internal`に向けてください：
@@ -229,7 +213,7 @@ Docker Desktop（macOS/Windows）は通常`--add-host`なしで`host.docker.inte
 Web UIが不要な場合。CLIのみのパッケージはPyPIからではなく、ソースチェックアウトからインストールします。
 
 ```bash
-git clone https://github.com/HKUDS/DeepTutor.git
+git clone --branch tjm/implementation --single-branch https://github.com/tsutomu-n/DeepTutor.git
 cd DeepTutor
 
 # venvを作成(macOS/Linux)。Windows PowerShell:

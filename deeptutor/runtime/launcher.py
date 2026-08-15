@@ -933,21 +933,25 @@ def start(home: str | Path | None = None, *, dev: bool = False) -> None:
     os.environ[DEEPTUTOR_HOME_ENV] = str(runtime_home)
     _reset_runtime_singletons()
 
+    from deeptutor.logging import configure_logging
     from deeptutor.services.config import (
         HTTP_KEEP_ALIVE_TIMEOUT,
-        ensure_runtime_settings_files,
-        export_runtime_settings_to_env,
         get_ws_max_size,
-        load_auth_settings,
         load_launch_settings,
     )
+    from deeptutor.services.config.model_catalog import ModelCatalogService
+    from deeptutor.services.config.runtime_settings import RuntimeSettingsService
     from deeptutor.services.setup import init_user_directories
 
     init_user_directories(runtime_home)
-    ensure_runtime_settings_files()
+    settings_dir = runtime_home / "data" / "user" / "settings"
+    runtime_settings = RuntimeSettingsService.get_instance(settings_dir)
+    runtime_settings.ensure_defaults()
+    ModelCatalogService.get_instance(settings_dir / "model_catalog.json").load()
+    configure_logging(force=True)
     settings = load_launch_settings(runtime_home)
-    runtime_env = export_runtime_settings_to_env(overwrite=True)
-    auth_enabled = bool(load_auth_settings()["enabled"])
+    runtime_env = runtime_settings.export_environment(overwrite=True)
+    auth_enabled = bool(runtime_settings.load_auth()["enabled"])
 
     global _ACTIVE_LABELS
     language = resolve_language()
@@ -990,7 +994,7 @@ def start(home: str | Path | None = None, *, dev: bool = False) -> None:
     )
     if (resolved_backend, resolved_frontend) != (backend_port, frontend_port):
         backend_port, frontend_port = resolved_backend, resolved_frontend
-        runtime_env = export_runtime_settings_to_env(overwrite=True)
+        runtime_env = runtime_settings.export_environment(overwrite=True)
         backend_url = f"http://localhost:{backend_port}"
         api_base = (
             runtime_env.get("NEXT_PUBLIC_API_BASE_EXTERNAL")

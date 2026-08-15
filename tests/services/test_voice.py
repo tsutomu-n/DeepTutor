@@ -19,11 +19,13 @@ from deeptutor.services.config.provider_runtime import (
     resolve_tts_runtime_config,
 )
 from deeptutor.services.voice import synthesize_speech, transcribe_audio
+from deeptutor.services.voice.adapters.edge_tts import EdgeTTSAdapter
 from deeptutor.services.voice.adapters.openai_compat import (
     OpenAICompatSTTAdapter,
     OpenAICompatTTSAdapter,
     OpenRouterTTSAdapter,
 )
+from deeptutor.services.voice.adapters.sherpa_onnx import SherpaOnnxSTTAdapter
 from deeptutor.services.voice.base import (
     build_auth_headers,
     join_audio_path,
@@ -327,6 +329,24 @@ def test_resolve_tts_config_picks_openrouter_adapter() -> None:
     assert cfg.adapter == "openrouter_tts"
 
 
+def test_resolve_optional_voice_adapters_from_catalog() -> None:
+    catalog = _voice_catalog()
+    tts_profile = catalog["services"]["tts"]["profiles"][0]
+    tts_profile["binding"] = "edge_tts"
+    tts_profile["models"][0].update({"model": "edge-tts", "voice": "ja-JP-NanamiNeural"})
+    stt_profile = catalog["services"]["stt"]["profiles"][0]
+    stt_profile["binding"] = "sherpa_onnx"
+    stt_profile["models"][0]["model"] = "/models/reazonspeech"
+
+    tts = resolve_tts_runtime_config(catalog=catalog)
+    stt = resolve_stt_runtime_config(catalog=catalog)
+
+    assert tts.adapter == "edge_tts"
+    assert tts.voice == "ja-JP-NanamiNeural"
+    assert stt.adapter == "sherpa_onnx"
+    assert stt.model == "/models/reazonspeech"
+
+
 def test_resolve_tts_config_raises_without_model() -> None:
     catalog = {"version": 1, "services": {"tts": {"profiles": []}}}
     with pytest.raises(ValueError, match="No active TTS model"):
@@ -351,3 +371,97 @@ async def test_transcribe_audio_facade(monkeypatch: pytest.MonkeyPatch) -> None:
     _capture_post(monkeypatch, resp)
     text = await transcribe_audio(b"bytes", catalog=_voice_catalog(), filename="x.webm")
     assert text == "transcribed"
+
+
+@pytest.mark.asyncio
+async def test_edge_tts_adapter_is_lazy_and_collects_audio(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+    from types import SimpleNamespace
+
+    class Communicate:
+        def __init__(self, text: str, voice: str, rate: str | None = None) -> None:
+            assert text == "問題文"
+            assert voice == "ja-JP-NanamiNeural"
+
+        async def stream(self):
+            yield {"type": "audio", "data": b"part-1"}
+            yield {"type": "WordBoundary", "data": b"ignored"}
+            yield {"type": "audio", "data": b"part-2"}
+
+    monkeypatch.setitem(sys.modules, "edge_tts", SimpleNamespace(Communicate=Communicate))
+    audio, content_type = await EdgeTTSAdapter().synthesize(
+        "問題文",
+        TTSConfig(
+            model="edge-tts",
+            provider_name="edge_tts",
+            adapter="edge_tts",
+            voice="ja-JP-NanamiNeural",
+        ),
+    )
+    assert audio == b"part-1part-2"
+    assert content_type == "audio/mpeg"
+
+
+@pytest.mark.asyncio
+async def test_sherpa_adapter_transcribes_pcm_wav_without_network(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    import io
+    import sys
+    from types import SimpleNamespace
+    import wave
+
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    for name in (
+        "encoder-epoch-99-avg-1.int8.onnx",
+        "decoder-epoch-99-avg-1.onnx",
+        "joiner-epoch-99-avg-1.int8.onnx",
+        "tokens.txt",
+    ):
+        (model_dir / name).write_bytes(b"fixture")
+
+    captured: dict[str, Any] = {}
+
+    class Stream:
+        result = SimpleNamespace(text="二番")
+
+        def accept_waveform(self, rate: int, samples: list[float]) -> None:
+            captured["rate"] = rate
+            captured["samples"] = samples
+
+    class Recognizer:
+        @classmethod
+        def from_transducer(cls, **kwargs: Any):
+            captured["config"] = kwargs
+            return cls()
+
+        def create_stream(self) -> Stream:
+            return Stream()
+
+        def decode_stream(self, stream: Stream) -> None:
+            captured["decoded"] = True
+
+    monkeypatch.setitem(sys.modules, "sherpa_onnx", SimpleNamespace(OfflineRecognizer=Recognizer))
+    wav_buffer = io.BytesIO()
+    with wave.open(wav_buffer, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16000)
+        wav.writeframes(b"\x00\x00\x01\x00" * 80)
+
+    text = await SherpaOnnxSTTAdapter().transcribe(
+        wav_buffer.getvalue(),
+        STTConfig(
+            model=str(model_dir),
+            provider_name="sherpa_onnx",
+            adapter="sherpa_onnx",
+            language="ja",
+        ),
+        filename="candidate.wav",
+        content_type="audio/wav",
+    )
+    assert text == "二番"
+    assert captured["rate"] == 16000
+    assert captured["decoded"] is True
+    assert captured["config"]["num_threads"] >= 1

@@ -7,8 +7,8 @@ import os
 from pathlib import Path
 from typing import Any, Callable
 
+from deeptutor.runtime.home import get_runtime_data_root
 from deeptutor.services.file_io import atomic_write_json as _atomic_write_json
-from deeptutor.services.path_service import get_path_service
 
 from .origins import normalize_origins
 
@@ -932,12 +932,12 @@ def _bool_env(value: Any) -> str:
 
 
 def _global_settings_dir() -> Path:
-    try:
-        from deeptutor.multi_user.paths import get_admin_path_service
-
-        return get_admin_path_service().get_settings_dir()
-    except Exception:
-        return get_path_service().get_settings_dir()
+    # This service owns deployment-wide settings, which always live in the
+    # admin workspace. Resolve the runtime home at call time: the CLI imports
+    # application modules before ``deeptutor start --home ...`` selects its
+    # workspace, so import-time multi-user path constants may still point at
+    # the caller's original working directory.
+    return get_runtime_data_root() / "user" / "settings"
 
 
 def get_runtime_settings_service() -> RuntimeSettingsService:

@@ -189,6 +189,15 @@ matrix-e2e = [
 # System prerequisites (installed outside pip): LaTeX, pkg-config, cairo, cmake, ffmpeg.
 math-animator = ["manim>=0.19.0"]
 
+# Optional TJM voice engines. Model files are deliberately not bundled:
+# sherpa-onnx reads an administrator-configured local model directory, while
+# edge-tts is an online exchangeable TTS provider rather than a fallback.
+voice-local = [
+    "sherpa-onnx==1.13.4",
+    "sherpa-onnx-bin==1.13.4",
+]
+voice-edge = ["edge-tts==7.2.8"]
+
 # GraphRAG knowledge-base engine (microsoft/graphrag). Optional, heavy
 # (LiteLLM + lancedb + graspologic) and kept out of `all` so it stays a
 # deliberate opt-in. The pipeline imports lazily and the adapter targets the
@@ -231,6 +240,8 @@ all = [
     "deeptutor[partners]",
     "deeptutor[matrix]",
     "deeptutor[math-animator]",
+    "deeptutor[voice-local]",
+    "deeptutor[voice-edge]",
     "deeptutor[dev]",
 ]
 

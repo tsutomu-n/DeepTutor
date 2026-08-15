@@ -1,0 +1,745 @@
+{
+  "schema_version": "1.0",
+  "updated_at": "2026-08-15_12:52",
+  "timezone": "Asia/Tokyo",
+  "status": "in_progress",
+  "current_checkpoint": "CP-15",
+  "execution_state_source": {
+    "authoritative": ["IMPLEMENTATION_PLAN.md", "IMPLEMENTATION_PLAN.ai.json"],
+    "sp_state": "stale_cp11_read_only_in_current_execution_environment"
+  },
+  "repository": {
+    "path": "/home/tn/projects/DeepTutor",
+    "github": "tsutomu-n/DeepTutor",
+    "baseline_version": "1.5.8",
+    "baseline_commit": "44fa7a1552b88f9d8ce2c22259128a15ae2eb0c8",
+    "branch": "tjm/implementation",
+    "target_branch": "main",
+    "merge_authorized": false
+  },
+  "goal": "DeepTutorを基盤に、試験固有設定を中核コードへ固定しない択一試験学習機能TJMを完成させる",
+  "assumptions": [
+    "初期の問題取り込み、レビュー、公開権限は既存adminに限定する",
+    "実宅建問題本文は正当なデータ提供まで同梱しない",
+    "正式問題と回答履歴は既存AI Quiz保存領域と分離する",
+    "npmとNode 22を配布の正本として維持し、Bun移行はTJM完成範囲へ含めない",
+    "既存pass_scoreは公式値へ推測移行せず利用者のpractice targetとして保全する",
+    "TJM日本語化とDeepTutor全体の日本語化は分離し、今回の製品受入はTJM導線を対象にする",
+    "source-build Dockerを配備の正本とし、GHCR publishと本番配備は行わない",
+    "共有catalogと利用者別learning DBを跨ぐ廃止処理は単一transactionに見せかけず、各利用者操作の入口で単調に同期して永続化する"
+  ],
+  "invariants": [
+    "LLMは正式正解、採点、公開、回答履歴を変更しない",
+    "公開済み問題版は不変である",
+    "試験提出前の応答は正解、解説、採点結果を含まない",
+    "音声認識文字列は確認後だけ正式回答になる",
+    "音声またはAI障害時も画面操作を継続できる",
+    "試験の問題数、分野名、制限時間をPythonまたはTypeScript定数へ固定しない",
+    "レビュー済みrevisionと公開時のcurrent revisionがtransaction内で一致しなければ公開しない",
+    "正式回答時間はサーバー時刻を正本としclient時間は診断値に限定する",
+    "同一idempotency keyの再送で回答イベント、採点、復習完了を二重適用しない",
+    "復習attemptは開始時にlinkしたqueue行だけを完了し、後発行と既にdismiss済みの行を変更しない",
+    "superseded版の過去得点と開始済みattemptは有効だが、新規出題と復習から除外し新版へ自動移送しない",
+    "invalid_content版はraw履歴と保存得点を削除せず、正式採点表示、分析、新規回答から除外する",
+    "過去に保存した冪等responseも現在invalid_contentなら安全なprojectionへ再投影し、正式正解や旧eligible状態を復活させない",
+    "公式点は検証可能な根拠資料と一体で扱い、未知の値を推測しない",
+    "公式点と根拠資料、個人目標と由来、最大点、採点方式はattempt開始時に固定し、後の設定変更で過去結果を変えない",
+    "公式合否と個人目標達成を別々に評価し、一方を他方の代替として表示しない"
+  ],
+  "planned_storage": {
+    "engine": "SQLite",
+    "separate_from_chat_history": true,
+    "databases": [
+      {
+        "name": "catalog",
+        "scope": "deployment_system",
+        "path": "data/system/tjm/catalog.db",
+        "write_role": "admin",
+        "tables": [
+          "schema_migrations",
+          "exam_definitions",
+          "questions",
+          "question_versions",
+          "question_version_revisions",
+          "review_events",
+          "review_bindings",
+          "import_batches"
+        ]
+      },
+      {
+        "name": "learning",
+        "scope": "per_user_path_service",
+        "path": "<user-root>/user/tjm_learning.db",
+        "tables": [
+          "schema_migrations",
+          "attempts",
+          "attempt_items",
+          "answer_events",
+          "exam_preferences",
+          "review_queue",
+          "review_attempt_queue_links",
+          "learning_commands"
+        ]
+      }
+    ]
+  },
+  "baseline": {
+    "repository_diff": "none",
+    "python": "3.12.12",
+    "python_lockfile_present": false,
+    "current_python_lockfile": "uv.lock",
+    "python_dependencies": {
+      "status": "passed",
+      "installed_packages": 170
+    },
+    "python_tests": {
+      "status": "passed",
+      "passed": 3555,
+      "skipped": 8,
+      "warnings": 205,
+      "seconds": 42.33
+    },
+    "ruff": {
+      "status": "passed",
+      "formatted_files_checked": 1134
+    },
+    "mypy": {
+      "status": "baseline_failed",
+      "reason": "pyprojectのPython 3.11設定でNumPy 2.5.1 stubのPython 3.12 type statementを解析できない"
+    },
+    "local_node": "24.14.0",
+    "ci_docker_node": "22",
+    "npm_install": {
+      "status": "passed",
+      "packages": 774
+    },
+    "npm_audit": {
+      "status": "baseline_risk",
+      "low": 1,
+      "moderate": 4,
+      "high": 5,
+      "critical": 0
+    },
+    "web_node_tests": {
+      "status": "passed",
+      "passed": 366
+    },
+    "eslint": {
+      "status": "passed_with_warnings",
+      "errors": 0,
+      "warnings": 56
+    },
+    "typescript": {
+      "status": "passed"
+    },
+    "next_build": {
+      "status": "passed",
+      "routes": 57
+    },
+    "python_build": {
+      "status": "passed",
+      "artifacts": [
+        "dist/deeptutor-1.5.8.tar.gz",
+        "dist/deeptutor-1.5.8-py3-none-any.whl"
+      ]
+    },
+    "docker_build": {
+      "status": "passed",
+      "default_target": {
+        "target": "development",
+        "tag": "deeptutor-tjm:cp04",
+        "image_id": "sha256:8cabcca152d5fc4484676e64567475ca35ff3b89046fc54e3195bb0b2518a626",
+        "size_bytes": 714288009
+      },
+      "production_target": {
+        "tag": "deeptutor-tjm:cp04-production",
+        "image_id": "sha256:5095fe6410e25228e408a0de3c67946200a99dcec649af948c760fd7c0f30236",
+        "size_bytes": 450313679,
+        "python": "3.11.15",
+        "node": "22.23.2",
+        "deeptutor": "1.5.8",
+        "app_import": "passed"
+      }
+    },
+    "cp05": {
+      "status": "passed",
+      "catalog_schema_version": 2,
+      "learning_schema_version": 1,
+      "published_version_sqlite_guards": "passed",
+      "review_before_publish": "passed",
+      "deterministic_grading": "passed",
+      "tests": {
+        "passed": 26,
+        "command": "pytest -q tests/tjm tests/services/test_path_service.py tests/multi_user/test_identity_and_paths.py"
+      },
+      "ruff": "passed"
+    },
+    "cp06": {
+      "status": "passed",
+      "formats": ["json", "jsonl", "csv"],
+      "all_or_nothing": "passed",
+      "failed_batch_audit": "passed",
+      "identical_content_deduplication": "passed",
+      "admin_review_workflow": "passed",
+      "tests": {
+        "passed": 31,
+        "command": "pytest -q tests/tjm tests/api/test_tjm_router.py"
+      },
+      "ruff": "passed"
+    },
+    "cp07": {
+      "status": "passed",
+      "blueprint_activation_gate": "passed",
+      "fixed_attempt_order_after_restart": "passed",
+      "append_only_answer_events": "passed",
+      "practice_feedback": "after_confirm",
+      "exam_feedback": "after_submit",
+      "deadline_and_double_submit": "passed",
+      "per_user_attempt_isolation": "passed",
+      "tests": {
+        "passed": 41,
+        "command": "pytest -q tests/tjm tests/api/test_tjm_router.py"
+      },
+      "ruff": "passed"
+    },
+    "cp08": {
+      "status": "passed",
+      "review_reasons": ["incorrect", "low_confidence", "hint_used", "slow_correct"],
+      "review_attempt": "passed",
+      "analytics": ["overall", "by_area", "confidence", "time", "hint_use", "trend"],
+      "empty_partial_retired_cases": "passed",
+      "tests": {
+        "passed": 45,
+        "command": "pytest -q tests/tjm tests/api/test_tjm_router.py"
+      },
+      "ruff": "passed"
+    },
+    "cp09": {
+      "status": "passed",
+      "route": "/tjm",
+      "server_authoritative_grading": "passed",
+      "in_progress_exam_client_grade_stripping": "passed",
+      "attempt_reload": "passed",
+      "admin_import_review_publish": "passed",
+      "concurrent_sqlite_migration": "passed",
+      "web_node_tests": 371,
+      "typescript": "passed",
+      "eslint": {
+        "errors": 0,
+        "warnings": 56,
+        "warning_delta_from_baseline": 0
+      },
+      "next_build": {
+        "status": "passed",
+        "routes": 58
+      },
+      "browser": {
+        "desktop": "passed",
+        "viewport_375px": "passed",
+        "initial_api_status": "all_200",
+        "console_errors": 0
+      }
+    },
+    "cp10": {
+      "status": "passed",
+      "voice_answer_boundary": {
+        "candidate_does_not_save_answer": "passed",
+        "cancel_does_not_save_answer": "passed",
+        "confirm_is_only_voice_save_path": "passed",
+        "ambiguous_transcript": "rejected",
+        "double_confirm": "rejected_409"
+      },
+      "vad": {
+        "package": "@ricky0123/vad-web@0.0.30",
+        "model": "silero_vad_v5",
+        "assets": "self_hosted_at_/vad/",
+        "cdn_dependency": false,
+        "browser_fake_microphone_e2e": "passed",
+        "speech_start": "passed",
+        "speech_end": "passed",
+        "stale_callback_guard": "passed"
+      },
+      "sherpa_onnx": {
+        "version": "1.13.4",
+        "model": "reazon-research/reazonspeech-k2-v2_int8",
+        "model_files_mebibytes_approx": 162,
+        "audio_seconds": 3.0,
+        "transcript": "選択肢の二番を選びます",
+        "cold_seconds": 1.549313,
+        "cold_rtf": 0.516438,
+        "warm_seconds": [0.076699, 0.067055],
+        "warm_rtf": [0.025566, 0.022352],
+        "platform": "Linux_x86_64_cpu_4_threads",
+        "model_bundled": false
+      },
+      "edge_tts": {
+        "version": "7.2.8",
+        "role": "optional_exchangeable_online_adapter",
+        "automatic_fallback": false
+      },
+      "web": {
+        "node_tests_passed": 374,
+        "typescript": "passed",
+        "eslint_errors": 0,
+        "eslint_warnings": 56,
+        "eslint_warning_delta_from_baseline": 0,
+        "next_routes": 58,
+        "viewport_375px": "passed",
+        "voice_failure_screen_fallback": "passed"
+      },
+      "targeted_python_tests": {
+        "passed": 98,
+        "warnings": 205
+      }
+    },
+    "cp11": {
+      "status": "passed",
+      "contract_audit": {
+        "review_mode_bypass": "fixed_and_regression_tested",
+        "review_attempt_only_endpoint": "/api/v1/tjm/review/attempts",
+        "missing_exam_patch_contract": "implemented_and_regression_tested",
+        "active_exam_update": "rejected"
+      },
+      "python": {
+        "tests_passed": 3611,
+        "tests_skipped": 8,
+        "warnings": 211,
+        "seconds": 34.87,
+        "ruff": "passed",
+        "changed_files_mypy_python_3_12": "passed",
+        "full_mypy": "same_baseline_numpy_stub_python_3_11_failure",
+        "uv_lock_packages": 383,
+        "uv_build": "passed"
+      },
+      "web": {
+        "node_tests_passed": 374,
+        "eslint_errors": 0,
+        "eslint_warnings": 56,
+        "typescript": "passed",
+        "next_version": "16.2.12",
+        "next_routes": 58,
+        "vad_assets": 4
+      },
+      "npm_audit": {
+        "baseline_total": 10,
+        "current_total": 5,
+        "low": 0,
+        "moderate": 2,
+        "high": 3,
+        "critical": 0,
+        "remaining": [
+          "next@16.2.12 -> postcss@8.4.31",
+          "next@16.2.12 -> sharp@0.34.5",
+          "exceljs@4.4.0 -> uuid@8.3.2"
+        ],
+        "unsafe_force_fix": "not_applied"
+      },
+      "bun_evaluation": {
+        "version": "1.3.14",
+        "decision": "keep_npm_and_node_22_canonical",
+        "reason": "frozen dry-run migrated package-lock and wrote bun.lock; CI and Docker use npm"
+      },
+      "docker": {
+        "target": "production",
+        "tag": "deeptutor-tjm:cp11-production",
+        "status": "passed",
+        "size_bytes": 456783066,
+        "node": "22.23.2",
+        "deeptutor": "1.5.8",
+        "tjm_routes": 24,
+        "frontend_tjm_http": 200,
+        "container_health": "healthy",
+        "optional_voice_extras_bundled": false
+      },
+      "release_audit": {
+        "placeholder_or_fake_success": "not_found",
+        "llm_grading_path": "not_found",
+        "pre_submit_exam_answer_leak": "not_found",
+        "diff_check": "passed"
+      }
+    }
+  },
+  "reassessment": {
+    "audited_at": "2026-08-03_12:12",
+    "audited_head": "28747af3590065dc3a47f6abbacc1b84f6cc8037",
+    "previous_completion_claim": {
+      "claimed_at": "2026-08-02_22:50",
+      "status": "withdrawn",
+      "reason": "追加監査で正式問題、時間、期限、復習、廃止版、配布、永続化の未試験契約違反を再現した"
+    },
+    "confirmed_failures": [
+      "review後に内容を変更しても旧reviewでpublishできる",
+      "client elapsed 0と未来時刻が正式analyticsへ反映される",
+      "期限後GETとhistoryがin_progressのままになる",
+      "review開始後の後発queue理由が古いattemptで完了する",
+      "retired版が新規review対象に残る",
+      "GHCR composeがTJM catalogと一般ユーザー履歴を永続化しない",
+      "手元のwheelがpackaged Next assetsを含まない",
+      "Draft PRにworkflow run、check、reviewがない"
+    ],
+    "targeted_tests": {
+      "status": "passed_but_incomplete",
+      "passed": 53
+    },
+    "remediation_progress": {
+      "catalog_revision_review": {
+        "status": "completed",
+        "catalog_schema_version": 3,
+        "tables_added": ["question_version_revisions", "review_bindings"],
+        "legacy_policy": "preserve immutable review events, exclude unbound legacy publications from selection, and require human re-review instead of inferring a binding",
+        "legacy_attribution": "use legacy-unknown and the last updated_at when v2 cannot prove the editor",
+        "identity_policy": "question and question-version identity plus all review events are immutable at the database layer",
+        "admin_remediation_ui": "published legacy_unverified rows are listed for re-review without edit, reject, or republish controls",
+        "content_hash_regressions": ["choice_order", "area", "explanation", "hints", "source"],
+        "transactional_publish_recheck": "passed",
+        "targeted_tests": {"passed": 42, "warnings": 211},
+        "related_tjm_api_tests": {"passed": 66, "warnings": 211},
+        "web_node_tests": {"passed": 377, "legacy_admin_behavior_tests": 3},
+        "web_typecheck_and_targeted_lint": "passed",
+        "ruff": "passed",
+        "remote_commit": "b48301dc"
+      },
+      "learning_timing_idempotency_expiry": {
+        "status": "completed",
+        "learning_schema_version": 2,
+        "formal_time": "server elapsed from first presented to first confirmed answer; client elapsed retained only as diagnostics",
+        "legacy_time_policy": "backfill legacy client elapsed and final answer timestamp only; never infer first presentation, first answer, or server elapsed",
+        "explicit_item_open": "web hides stem and choices until POST item-open is acknowledged",
+        "expiry_policy": "now greater than or equal to deadline atomically grades once, records deadline as submitted_at, and returns expired state through read and write entry points",
+        "idempotency_commands": [
+          "start_attempt",
+          "start_review_attempt",
+          "record_answer",
+          "use_hint",
+          "record_voice_candidate",
+          "confirm_voice_candidate",
+          "cancel_voice_candidate",
+          "submit_attempt"
+        ],
+        "idempotency_replay": "command side effects and stored response remain immutable, but replay is projected through current expiry and catalog revocation state; same key with another canonical payload fails 409",
+        "browser_retry": "first-party key and exact body persist in sessionStorage until completion and survive same-tab reload",
+        "answer_change_policy": "practice and review lock after feedback reveal; exam remains editable until finalization",
+        "voice_race_policy": "recording target is fixed at microphone start; navigation and screen mutations lock during voice processing; deadline closes microphone, speech, and confirmation dialogs",
+        "targeted_tests": {"passed": 49, "warnings": 211},
+        "related_tjm_api_tests": {"passed": 83, "warnings": 211},
+        "web_node_tests": {"passed": 387},
+        "independent_review_followup": "voice shutdown failure cannot block submit or expiry refresh; Strict Mode restores mounted state; navigation waits for item-open acknowledgement",
+        "web_typecheck_and_targeted_lint": "passed",
+        "ruff_and_diff_check": "passed"
+      },
+      "review_queue_retirement": {
+        "status": "completed",
+        "catalog_schema_version": 4,
+        "learning_schema_version": 3,
+        "queue_snapshot": "review_attempt_queue_links stores the exact queue row ids present at review-attempt start; submit updates linked pending rows only",
+        "two_tab_policy": "non-exclusive snapshots preserve the existing API; SQLite first-writer-wins resolution records one resolution_attempt_id without locking abandoned tabs",
+        "retirement_reasons": ["superseded", "invalid_content"],
+        "legacy_retirement_policy": "leave reason and retired_at null instead of guessing; reconcile as retired_unclassified and fail closed until a human explicitly supplies a valid later same-question replacement id",
+        "retirement_transition": "manual retirement is invalid_content; publishing a replacement records superseded and a later replacement id; legacy classification requires a later valid same-question replacement in both service and SQLite trigger; superseded may only escalate to invalid_content",
+        "cross_database_policy": "catalog is deployment-wide and learning DB is per-user, so every list, start, read, write, finalize, history, and analytics entry lazily persists monotonic disposition and queue dismissal",
+        "invalid_content_policy": "preserve answer events and stored raw score, reject new interaction, omit official answer fields, exclude invalid items from grading and analytics",
+        "superseded_policy": "started attempts remain gradeable and historical analytics remain valid; pending old-version review is dismissed without automatic transfer",
+        "idempotent_revocation_projection": "stored command effects and exact response remain unchanged for current or superseded content; answer, submit, and start replays redact only invalidated or unclassified grading fields and report current invalidation",
+        "admin_retirement_ui": "published content can be invalidated with a human note; unclassified legacy retirement can be classified only with an explicit valid replacement version id",
+        "invalid_score_ui": "final and history cards label retained scores as historical raw scores when content has been invalidated",
+        "targeted_tjm_api_tests": {"passed": 97, "warnings": 211},
+        "web_node_tests": {"passed": 389},
+        "web_typecheck_and_targeted_lint": "passed",
+        "ruff_and_diff_check": "passed"
+      },
+      "authorization_and_leakage": {
+        "status": "completed",
+        "learning_schema_version": 4,
+        "completed_controls": [
+          "get_attempt_service depends on require_auth and fails closed when request user context is absent",
+          "TJM learning storage uses the exact current-user workspace and never calls the generic admin fallback",
+          "an active exam blocks new same-exam attempts at service and SQLite trigger boundaries",
+          "pre-existing practice, review, and finalized exam attempts are frozen only while another same-exam exam is active",
+          "same-exam direct reads, prior submit replay, history, analytics, review queue, and idempotent feedback replay cannot expose grading data during an active exam",
+          "expired exams are finalized before the start guard, direct submit at the exact deadline remains atomic, and parallel exam starts create one active attempt",
+          "all 21 TJM mutations require one exact allowlisted Origin for cookie-only authentication while validated single-Bearer and auth-disabled clients retain compatibility",
+          "authentication-enabled CORS rejects configured wildcard or opaque origins at startup and never passes them to credentialed CORSMiddleware",
+          "the network settings API rejects wildcard or opaque credentialed origins before saving and leaves the existing network configuration unchanged"
+        ],
+        "migration_policy": "Learning v4 preserves pre-existing duplicate active exams instead of guessing which one to finalize; it blocks every new same-exam attempt until no active exam remains",
+        "scope_limit": "this prevents concurrent API answer-oracle paths in a self-study product; it is not proctoring and cannot erase answers learned or saved before exam start",
+        "outside_scope": "the generic get_path_service fallback remains available outside TJM and requires a separate application-wide audit",
+        "remaining_findings": [],
+        "evidence": {
+          "tjm_api_tests": {"passed": 229, "warnings": 215},
+          "independent_review": "initial review found credentialed wildcard CORS and unguarded learner mutations; re-review found delayed restart failure from unsafe network-settings writes; after all three fixes the final read-only review found no unresolved P0/P1 or settings/API regression and reran 11 focused tests successfully",
+          "cors_middleware": "cookie request from an unlisted Origin receives no ACAO and its preflight fails 400; an explicitly listed concrete Origin succeeds",
+          "network_settings": "when authentication is enabled, wildcard and opaque origins fail 422 before persistence and prior ports and allowlist remain unchanged",
+          "next_proxy_smoke": "the repository Next server preserved frontend Origin, cookie, method, and body under Node 24 development and Node 22 production Docker; TLS reverse-proxy deployment remains unverified",
+          "catalog_concurrent_init_probe": "reviewer observed one WAL-lock failure in three runs outside this diff; primary reran the exact test ten times successfully, so recurrence remains unconfirmed",
+          "ruff_and_diff_check": "passed"
+        }
+      },
+      "official_and_target_score_results": {
+        "status": "completed",
+        "catalog_schema_version": 5,
+        "learning_schema_version": 5,
+        "official_score_policy": "score and human-verifiable evidence source are paired; unknown values are never inferred",
+        "preference_policy": "personal targets are stored per user; an explicit null tombstone prevents a legacy value from reappearing",
+        "legacy_policy": "legacy pass_score never becomes official; only a valid integer may seed a personal target, while REAL or corrupt values remain ambiguous",
+        "snapshot_policy": "schema v2 freezes maximum score, official score and source, personal target and origin, and exact unit-correct scoring policy",
+        "result_policy": "official pass/fail and personal target achievement are separate deterministic dimensions and AI is never consulted",
+        "result_reasons": [
+          "official_score_unavailable",
+          "practice_target_unset",
+          "mode_not_eligible",
+          "content_invalidated",
+          "incomplete_score_scope",
+          "legacy_score_ambiguous"
+        ],
+        "database_boundary": "v5 preflight, validator UDFs, immutable triggers, recursive trigger enforcement, exact item scope, and finalized-state guards reject invalid migration history and direct-SQL invariant bypasses",
+        "web_boundary": "unknown runtime enums, snapshot or scoring policy versions, snapshot/result threshold or source drift, and item/count/grade contradictions cannot produce a positive result; bounded raw counts remain visible after post-finalization invalidation",
+        "local_evidence": {
+          "python": {"passed": 229, "warnings": 215},
+          "web_node_tests": {"passed": 407},
+          "web_typecheck_and_targeted_lint": "passed",
+          "ruff_and_diff_check": "passed",
+          "storage_review": "149 TJM tests passed with no unresolved P0/P1",
+          "cross_layer_review": "no unresolved P0/P1; reviewer independently passed Python 229, Web 407, Ruff check and format-check, TypeScript, targeted ESLint, and diff check",
+          "publisher_clone": "from clean 737e130d under Python 3.13: Python 229, Web 407, TypeScript, targeted ESLint, Ruff, format, JSON parse, and diff check passed"
+        },
+        "remaining_findings": [],
+        "remote_commit": "f2366799"
+      },
+      "voice_candidate_integrity": {
+        "status": "completed",
+        "catalog_schema_version": 5,
+        "learning_schema_version": 6,
+        "database_boundary": "voice candidates are bound to attempt, position, question version, proposal, and unresolved state; stale, cross-item, duplicate-confirm, and direct-SQL bypasses fail closed",
+        "independent_review": "no unresolved P0, P1, or P2 after the V6 foreign-key and trigger audit"
+      },
+      "distribution_and_internal_acceptance": {
+        "status": "completed",
+        "python_full": {"passed": 3811, "skipped": 8, "warnings": 9, "seconds": 44.16},
+        "web": {
+          "node_24_tests": 426,
+          "node_22_tests": 426,
+          "typescript": "passed",
+          "targeted_lint": "passed",
+          "full_eslint": {"errors": 0, "warnings": 56},
+          "npm_audit_total": 0,
+          "production_routes": 58
+        },
+        "behavioral_e2e": {"passed": 7, "seconds": 55.8, "real_vad_path_seconds": 22.7},
+        "wheel": {
+          "sha256": "1befa5bb5075514a83bbb8c8a403a5e258302afd483559c0804a2bc2078bcf77",
+          "isolated_install_packages": 135,
+          "pip_check": "passed",
+          "launcher_initial_restart_restore": "passed"
+        },
+        "docker_amd64": {
+          "image_id": "sha256:09a13ef975e4456b753b11eb9d4e6c9749621bdadbaf8ead58e538fa1f7c7401",
+          "architecture": "amd64",
+          "initial_restart_backup_restore": "passed",
+          "teardown_fail_closed": "docker stop success, container absence, and both published ports unavailable are required"
+        },
+        "compose_configurations": 4,
+        "release_contract_tests": 9,
+        "release_controls": "external publication is variable-gated; Docker requires matching version, main ancestry, same-SHA Test Summary, explicit stable or prerelease aliases, and arm64 preflight while automatic latest is disabled; PyPI requires same-SHA Test Summary and rejects an existing version before publish",
+        "arm64": "optional QEMU preflight not run",
+        "remote_ci": {
+          "status": "passed",
+          "workflow": "Tests",
+          "run_id": 31862293486,
+          "run_url": "https://github.com/tsutomu-n/DeepTutor/actions/runs/31862293486",
+          "event": "pull_request",
+          "tested_head": "fb70f6543818531e97ce06bc1a748628120a3ef9",
+          "created_at": "2026-08-15T03:37:02Z",
+          "completed_at": "2026-08-15T03:40:40Z",
+          "required_jobs": 15,
+          "required_jobs_conclusion": "success",
+          "test_summary": "success",
+          "amd64_docker_distribution": "success",
+          "arm64_preflight": "skipped_by_design_on_pull_request",
+          "initial_failures": [
+            {
+              "run_id": 31860640081,
+              "tested_head": "37c96a9bfd6e5b77707b98fa4e2e1987d1fce0fc",
+              "cause": "host copytree could not read container UID 1000 owned settings and host cleanup could not reclaim the tree",
+              "fix_commit": "f6cf077a35207e19ff3c3d0bce8f6a00c759defb"
+            },
+            {
+              "run_id": 31861620876,
+              "tested_head": "f6cf077a35207e19ff3c3d0bce8f6a00c759defb",
+              "cause": "restart attempted host chmod on an existing container UID 1000 owned data root",
+              "fix_commit": "fb70f6543818531e97ce06bc1a748628120a3ef9"
+            }
+          ],
+          "non_blocking_annotations": [
+            "actions targeting the deprecated Node 20 runtime were forced to Node 24 by the runner"
+          ]
+        }
+      }
+    }
+  },
+  "completion_stages": [
+    {
+      "id": "A",
+      "name": "core_implementation",
+      "status": "completed",
+      "requires": ["catalog_integrity", "server_timing", "idempotency", "expiry", "review_queue", "retirement_policy", "score_results", "authorization"]
+    },
+    {
+      "id": "B",
+      "name": "distributable",
+      "status": "completed",
+      "requires": ["clean_build", "wheel_install_smoke", "docker_recreate_persistence", "backup_restore", "ci"]
+    },
+    {
+      "id": "C",
+      "name": "product_acceptance",
+      "status": "pending_external_only",
+      "requires": ["tjm_japanese_ui", "behavioral_e2e", "voice_automation", "target_device_acceptance", "licensed_takken_acceptance"]
+    },
+    {
+      "id": "D",
+      "name": "user_release_decision",
+      "status": "pending",
+      "requires": ["draft_pr_evidence", "user_decision"]
+    }
+  ],
+  "residual_risks": [
+    "catalog retirement is reconciled into each per-user learning DB before that user's next TJM response, not atomically fanned out to every inactive user DB",
+    "TJM cookie mutations are origin-guarded, but non-TJM state-changing cookie routes have not received an application-wide CSRF audit; Node 22 Docker proxying passed while a real TLS reverse proxy remains unverified",
+    "localhost frontend origins remain trusted when authentication is enabled; compose binds to loopback by default, while a remote-only CORS policy still requires explicit deployment configuration",
+    "Learning v4 preserves pre-existing duplicate active exams without guessing, and the active-exam guard is a concurrent API secrecy control rather than proctoring",
+    "the generic get_path_service admin fallback remains outside TJM and is not closed application-wide",
+    "eslint-plugin-react-hooks is pinned to 7.0.1 because 7.1.1 introduced 95 full-repository lint errors; future updates must preserve both zero lint errors and zero npm audit vulnerabilities",
+    "Docker requirements installation does not consume uv.lock",
+    "full mypy remains blocked by the baseline Python 3.11 and NumPy stub mismatch",
+    "linux arm64 Docker has not run locally or in the optional GitHub QEMU preflight; multi-arch publication is blocked until that check succeeds",
+    "licensed Takken question data and the sherpa model are not bundled",
+    "official passing scores and evidence sources for licensed Takken data are not bundled, so real-data official results remain unavailable until acceptance data is supplied",
+    "direct SQL can create an empty attempt id, although first-party APIs always generate att_<uuid> ids and this does not alter score facts; malicious local-DB tamper resistance is not claimed",
+    "the original meaning of an integer legacy pass_score is unprovable; it is never promoted to an official score and only seeds a user-editable personal target that an explicit null tombstone can permanently clear",
+    "PyPI already contains deeptutor 1.5.8 and the fork has no proven ownership of that project; publication stays disabled until an unused authorized version or fork-specific distribution name is chosen"
+  ],
+  "publication": {
+    "feature_commit": "80339c862d11c9432ca9c20be7b8b6bff6c98536",
+    "distribution_evidence_commit": "fb70f6543818531e97ce06bc1a748628120a3ef9",
+    "remote_branch": "origin/tjm/implementation",
+    "remote_ci": {
+      "status": "passed",
+      "workflow": "Tests",
+      "run_id": 31862293486,
+      "run_url": "https://github.com/tsutomu-n/DeepTutor/actions/runs/31862293486",
+      "event": "pull_request",
+      "tested_head": "fb70f6543818531e97ce06bc1a748628120a3ef9",
+      "required_jobs": 15,
+      "test_summary": "success",
+      "amd64_docker_distribution": "success",
+      "arm64_preflight": "skipped_by_design_on_pull_request"
+    },
+    "pull_request": {
+      "number": 1,
+      "url": "https://github.com/tsutomu-n/DeepTutor/pull/1",
+      "state": "open",
+      "draft": true,
+      "base": "main",
+      "head": "tjm/implementation",
+      "merged": false
+    }
+  },
+  "checkpoints": [
+    {
+      "id": "CP-04",
+      "title": "変更前ベースラインの確定",
+      "status": "completed",
+      "depends_on": []
+    },
+    {
+      "id": "CP-05",
+      "title": "TJMドメインとSQLite契約",
+      "status": "completed",
+      "depends_on": ["CP-04"]
+    },
+    {
+      "id": "CP-06",
+      "title": "取り込みと人間レビュー",
+      "status": "completed",
+      "depends_on": ["CP-05"]
+    },
+    {
+      "id": "CP-07",
+      "title": "通常演習、試験、回答履歴",
+      "status": "completed",
+      "depends_on": ["CP-05", "CP-06"]
+    },
+    {
+      "id": "CP-08",
+      "title": "復習と履歴分析",
+      "status": "completed",
+      "depends_on": ["CP-07"]
+    },
+    {
+      "id": "CP-09",
+      "title": "Web学習導線",
+      "status": "completed",
+      "depends_on": ["CP-06", "CP-07", "CP-08"]
+    },
+    {
+      "id": "CP-10",
+      "title": "読み上げと確認付き音声回答",
+      "status": "completed",
+      "depends_on": ["CP-09"]
+    },
+    {
+      "id": "CP-11",
+      "title": "全体検証と安全性監査",
+      "status": "completed",
+      "depends_on": ["CP-05", "CP-06", "CP-07", "CP-08", "CP-09", "CP-10"]
+    },
+    {
+      "id": "CP-12",
+      "title": "commit、push、Draft PR",
+      "status": "completed",
+      "depends_on": ["CP-11"]
+    },
+    {
+      "id": "CP-13",
+      "title": "中核整合性の修復",
+      "status": "completed",
+      "depends_on": ["CP-12"]
+    },
+    {
+      "id": "CP-14",
+      "title": "配布と永続化",
+      "status": "completed",
+      "depends_on": ["CP-13"]
+    },
+    {
+      "id": "CP-15",
+      "title": "製品受入",
+      "status": "pending_external",
+      "depends_on": ["CP-13", "CP-14"]
+    },
+    {
+      "id": "CP-16",
+      "title": "ユーザーリリース判断",
+      "status": "pending",
+      "depends_on": ["CP-15"]
+    }
+  ],
+  "continue_on_failures": [
+    "unit_api_e2e_ci_build_lint_type_failure",
+    "wheel_missing_web_assets_or_clean_install_failure",
+    "docker_recreate_persistence_failure",
+    "catalog_timing_expiry_review_ui_voice_automation_defect",
+    "dependency_issue_with_local_fix_or_evidence_based_risk_acceptance"
+  ],
+  "stop_conditions": [
+    "non_destructive_migration_cannot_preserve_existing_data_even_with_backup_and_recovery",
+    "repository_owner_action_is_required_to_change_permissions_publish_ghcr_or_pypi_deploy_merge_or_mark_ready",
+    "api_key_secret_paid_external_api_or_production_credential_is_required",
+    "pypi_distribution_ownership_version_or_fork_name_decision_is_required_before_publication",
+    "licensed_takken_content_official_source_or_yearly_score_evidence_is_required",
+    "human_operation_on_target_device_and_real_browser_is_required",
+    "major_goal_architecture_or_existing_user_data_assumption_cannot_be_resolved_from_repository_evidence"
+  ],
+  "completion_claim_allowed": false
+}
