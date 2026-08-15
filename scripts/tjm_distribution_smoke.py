@@ -458,8 +458,13 @@ def _teardown_docker_container(name: str, api_base: str, frontend_base: str) -> 
 def _docker_container(image: str, data_dir: Path) -> Iterator[tuple[str, str]]:
     backend_port, frontend_port = _free_ports(2)
     name = f"deeptutor-tjm-smoke-{uuid.uuid4().hex[:12]}"
-    data_dir.mkdir(parents=True, exist_ok=True)
-    data_dir.chmod(0o777)
+    try:
+        data_dir.mkdir(parents=True)
+    except FileExistsError:
+        if not data_dir.is_dir():
+            raise
+    else:
+        data_dir.chmod(0o777)
     command = [
         "docker",
         "run",

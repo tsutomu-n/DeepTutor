@@ -250,6 +250,7 @@ def test_docker_teardown_fails_when_container_remains_inspectable(monkeypatch) -
 
 def test_docker_container_always_runs_verified_teardown(monkeypatch, tmp_path) -> None:
     module = _load_module()
+    data_dir = tmp_path / "data"
     monkeypatch.setattr(module, "_free_ports", lambda _count: (41001, 41002))
     monkeypatch.setattr(
         module.subprocess,
@@ -266,14 +267,43 @@ def test_docker_container_always_runs_verified_teardown(monkeypatch, tmp_path) -
         lambda name, api, frontend: teardown_calls.append((name, api, frontend)),
     )
 
-    with module._docker_container("deeptutor:test", tmp_path / "data") as endpoints:
+    with module._docker_container("deeptutor:test", data_dir) as endpoints:
         assert endpoints == ("http://127.0.0.1:41001", "http://127.0.0.1:41002")
 
+    assert data_dir.stat().st_mode & 0o777 == 0o777
     assert len(teardown_calls) == 1
     name, api, frontend = teardown_calls[0]
     assert name.startswith("deeptutor-tjm-smoke-")
     assert api == "http://127.0.0.1:41001"
     assert frontend == "http://127.0.0.1:41002"
+
+
+def test_docker_container_reuses_container_owned_data_without_host_chmod(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_module()
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    monkeypatch.setattr(module, "_free_ports", lambda _count: (41001, 41002))
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda command, **_kwargs: module.subprocess.CompletedProcess(
+            command, 0, stdout="container-id\n", stderr=""
+        ),
+    )
+    monkeypatch.setattr(module, "_wait_ready", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "_teardown_docker_container", lambda *_args: None)
+    monkeypatch.setattr(
+        type(data_dir),
+        "chmod",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("host chmod must not touch container-owned data")
+        ),
+    )
+
+    with module._docker_container("deeptutor:test", data_dir):
+        pass
 
 
 def test_docker_copy_tree_uses_offline_root_helper(monkeypatch, tmp_path) -> None:
