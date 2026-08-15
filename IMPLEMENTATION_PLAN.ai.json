@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "updated_at": "2026-08-15_12:41",
+  "updated_at": "2026-08-15_12:52",
   "timezone": "Asia/Tokyo",
   "status": "in_progress",
   "current_checkpoint": "CP-15",
@@ -621,7 +621,7 @@
   ],
   "publication": {
     "feature_commit": "80339c862d11c9432ca9c20be7b8b6bff6c98536",
-    "latest_tested_commit": "fb70f6543818531e97ce06bc1a748628120a3ef9",
+    "distribution_evidence_commit": "fb70f6543818531e97ce06bc1a748628120a3ef9",
     "remote_branch": "origin/tjm/implementation",
     "remote_ci": {
       "status": "passed",
