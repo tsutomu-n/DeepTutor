@@ -1,9 +1,9 @@
 {
   "schema_version": "1.0",
-  "updated_at": "2026-08-15_11:33",
+  "updated_at": "2026-08-15_12:41",
   "timezone": "Asia/Tokyo",
   "status": "in_progress",
-  "current_checkpoint": "CP-14",
+  "current_checkpoint": "CP-15",
   "execution_state_source": {
     "authoritative": ["IMPLEMENTATION_PLAN.md", "IMPLEMENTATION_PLAN.ai.json"],
     "sp_state": "stale_cp11_read_only_in_current_execution_environment"
@@ -514,7 +514,7 @@
         "independent_review": "no unresolved P0, P1, or P2 after the V6 foreign-key and trigger audit"
       },
       "distribution_and_internal_acceptance": {
-        "status": "completed_locally_ci_blocked_owner_action",
+        "status": "completed",
         "python_full": {"passed": 3811, "skipped": 8, "warnings": 9, "seconds": 44.16},
         "web": {
           "node_24_tests": 426,
@@ -543,15 +543,36 @@
         "release_controls": "external publication is variable-gated; Docker requires matching version, main ancestry, same-SHA Test Summary, explicit stable or prerelease aliases, and arm64 preflight while automatic latest is disabled; PyPI requires same-SHA Test Summary and rejects an existing version before publish",
         "arm64": "optional QEMU preflight not run",
         "remote_ci": {
-          "status": "blocked_fork_workflows_not_registered",
-          "pushed_head": "08a1a9f67d4dc0b3499d0fcbcac6f5e24d5deea1",
-          "actions_permission_enabled": true,
-          "default_branch_workflow_files": 3,
-          "registered_workflows": 0,
-          "workflow_runs": 0,
-          "check_runs": 0,
-          "pull_request_mergeable": true,
-          "required_owner_action": "enable workflows in the fork Actions tab, then rerun or synchronize the branch; required jobs and Test Summary must succeed"
+          "status": "passed",
+          "workflow": "Tests",
+          "run_id": 31862293486,
+          "run_url": "https://github.com/tsutomu-n/DeepTutor/actions/runs/31862293486",
+          "event": "pull_request",
+          "tested_head": "fb70f6543818531e97ce06bc1a748628120a3ef9",
+          "created_at": "2026-08-15T03:37:02Z",
+          "completed_at": "2026-08-15T03:40:40Z",
+          "required_jobs": 15,
+          "required_jobs_conclusion": "success",
+          "test_summary": "success",
+          "amd64_docker_distribution": "success",
+          "arm64_preflight": "skipped_by_design_on_pull_request",
+          "initial_failures": [
+            {
+              "run_id": 31860640081,
+              "tested_head": "37c96a9bfd6e5b77707b98fa4e2e1987d1fce0fc",
+              "cause": "host copytree could not read container UID 1000 owned settings and host cleanup could not reclaim the tree",
+              "fix_commit": "f6cf077a35207e19ff3c3d0bce8f6a00c759defb"
+            },
+            {
+              "run_id": 31861620876,
+              "tested_head": "f6cf077a35207e19ff3c3d0bce8f6a00c759defb",
+              "cause": "restart attempted host chmod on an existing container UID 1000 owned data root",
+              "fix_commit": "fb70f6543818531e97ce06bc1a748628120a3ef9"
+            }
+          ],
+          "non_blocking_annotations": [
+            "actions targeting the deprecated Node 20 runtime were forced to Node 24 by the runner"
+          ]
         }
       }
     }
@@ -566,7 +587,7 @@
     {
       "id": "B",
       "name": "distributable",
-      "status": "in_progress_owner_action",
+      "status": "completed",
       "requires": ["clean_build", "wheel_install_smoke", "docker_recreate_persistence", "backup_restore", "ci"]
     },
     {
@@ -600,18 +621,19 @@
   ],
   "publication": {
     "feature_commit": "80339c862d11c9432ca9c20be7b8b6bff6c98536",
-    "latest_remote_commit": "08a1a9f67d4dc0b3499d0fcbcac6f5e24d5deea1",
+    "latest_tested_commit": "fb70f6543818531e97ce06bc1a748628120a3ef9",
     "remote_branch": "origin/tjm/implementation",
     "remote_ci": {
-      "status": "blocked_fork_workflows_not_registered",
-      "actions_permission_enabled": true,
-      "default_branch_workflow_files": 3,
-      "registered_workflows": 0,
-      "workflow_runs": 0,
-      "check_runs": 0,
-      "pull_request_mergeable": true,
-      "required_owner_action": "enable workflows in the fork Actions tab and rerun or synchronize the branch",
-      "completion_gate": "required jobs and Test Summary must succeed before CP-14 and stage B can complete"
+      "status": "passed",
+      "workflow": "Tests",
+      "run_id": 31862293486,
+      "run_url": "https://github.com/tsutomu-n/DeepTutor/actions/runs/31862293486",
+      "event": "pull_request",
+      "tested_head": "fb70f6543818531e97ce06bc1a748628120a3ef9",
+      "required_jobs": 15,
+      "test_summary": "success",
+      "amd64_docker_distribution": "success",
+      "arm64_preflight": "skipped_by_design_on_pull_request"
     },
     "pull_request": {
       "number": 1,
@@ -687,7 +709,7 @@
     {
       "id": "CP-14",
       "title": "配布と永続化",
-      "status": "in_progress_owner_action",
+      "status": "completed",
       "depends_on": ["CP-13"]
     },
     {
@@ -712,7 +734,7 @@
   ],
   "stop_conditions": [
     "non_destructive_migration_cannot_preserve_existing_data_even_with_backup_and_recovery",
-    "repository_owner_action_is_required_to_enable_actions_change_permissions_publish_ghcr_or_pypi_deploy_merge_or_mark_ready",
+    "repository_owner_action_is_required_to_change_permissions_publish_ghcr_or_pypi_deploy_merge_or_mark_ready",
     "api_key_secret_paid_external_api_or_production_credential_is_required",
     "pypi_distribution_ownership_version_or_fork_name_decision_is_required_before_publication",
     "licensed_takken_content_official_source_or_yearly_score_evidence_is_required",
