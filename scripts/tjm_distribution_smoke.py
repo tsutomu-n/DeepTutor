@@ -534,28 +534,87 @@ for value in ('ricky0123', 'Silero Team', 'Microsoft Corporation'):
     )
 
 
+def _run_docker_filesystem_helper(image: str, volumes: list[str], script: str) -> None:
+    command = [
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--user",
+        "0:0",
+        "--entrypoint",
+        "/bin/sh",
+    ]
+    for volume in volumes:
+        command.extend(("--volume", volume))
+    command.extend((image, "-ceu", script))
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise RuntimeError(
+            f"Docker filesystem helper failed ({result.returncode}): {detail or 'no output'}"
+        )
+
+
+def _docker_copy_tree(image: str, source: Path, destination: Path) -> None:
+    destination.mkdir(parents=True)
+    _run_docker_filesystem_helper(
+        image,
+        [
+            f"{source.resolve()}:/source:ro",
+            f"{destination.resolve()}:/destination",
+        ],
+        "cp -a /source/. /destination/",
+    )
+
+
+def _reclaim_docker_tree(image: str, root: Path) -> None:
+    if not root.exists():
+        return
+    _run_docker_filesystem_helper(
+        image,
+        [f"{root.resolve()}:/smoke"],
+        f"chown -R {os.getuid()}:{os.getgid()} /smoke && chmod -R u+rwX /smoke",
+    )
+
+
 def _run_docker_smoke(image: str) -> None:
     _assert_docker_web_portable(image)
-    with tempfile.TemporaryDirectory(prefix="deeptutor-docker-smoke-") as raw:
+    with tempfile.TemporaryDirectory(
+        prefix="deeptutor-docker-smoke-", ignore_cleanup_errors=True
+    ) as raw:
         root = Path(raw)
-        original_data = root / "original-data"
-        print("docker smoke: initial container startup", flush=True)
-        with _docker_container(image, original_data) as (api, frontend):
-            _verify_surfaces(api, frontend)
-            attempt_id = _seed_attempt(api)
-            _verify_persisted(api, attempt_id)
+        try:
+            original_data = root / "original-data"
+            print("docker smoke: initial container startup", flush=True)
+            with _docker_container(image, original_data) as (api, frontend):
+                _verify_surfaces(api, frontend)
+                attempt_id = _seed_attempt(api)
+                _verify_persisted(api, attempt_id)
 
-        backup_data = root / "backup-data"
-        shutil.copytree(original_data, backup_data)
-        print("docker smoke: restart persisted state", flush=True)
-        with _docker_container(image, original_data) as (api, _):
-            _verify_persisted(api, attempt_id)
+            backup_data = root / "backup-data"
+            _docker_copy_tree(image, original_data, backup_data)
+            print("docker smoke: restart persisted state", flush=True)
+            with _docker_container(image, original_data) as (api, _):
+                _verify_persisted(api, attempt_id)
 
-        restored_data = root / "restored-data"
-        shutil.copytree(backup_data, restored_data)
-        print("docker smoke: restore backup into a new volume", flush=True)
-        with _docker_container(image, restored_data) as (api, _):
-            _verify_persisted(api, attempt_id)
+            restored_data = root / "restored-data"
+            _docker_copy_tree(image, backup_data, restored_data)
+            print("docker smoke: restore backup into a new volume", flush=True)
+            with _docker_container(image, restored_data) as (api, _):
+                _verify_persisted(api, attempt_id)
+        except BaseException as smoke_error:
+            try:
+                _reclaim_docker_tree(image, root)
+            except BaseException as reclaim_error:
+                raise BaseExceptionGroup(
+                    "Docker smoke and temporary-data cleanup both failed",
+                    [smoke_error, reclaim_error],
+                ) from None
+            raise
+        else:
+            _reclaim_docker_tree(image, root)
 
 
 def main() -> None:

@@ -1,4 +1,4 @@
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 import importlib.util
 from pathlib import Path
 import socket
@@ -274,3 +274,164 @@ def test_docker_container_always_runs_verified_teardown(monkeypatch, tmp_path) -
     assert name.startswith("deeptutor-tjm-smoke-")
     assert api == "http://127.0.0.1:41001"
     assert frontend == "http://127.0.0.1:41002"
+
+
+def test_docker_copy_tree_uses_offline_root_helper(monkeypatch, tmp_path) -> None:
+    module = _load_module()
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.mkdir()
+    calls: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        return module.subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    module._docker_copy_tree("deeptutor:test", source, destination)
+
+    assert destination.is_dir()
+    assert calls == [
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--user",
+            "0:0",
+            "--entrypoint",
+            "/bin/sh",
+            "--volume",
+            f"{source.resolve()}:/source:ro",
+            "--volume",
+            f"{destination.resolve()}:/destination",
+            "deeptutor:test",
+            "-ceu",
+            "cp -a /source/. /destination/",
+        ]
+    ]
+
+
+def test_docker_copy_tree_fails_closed_when_helper_fails(monkeypatch, tmp_path) -> None:
+    module = _load_module()
+    source = tmp_path / "source"
+    source.mkdir()
+
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda command, **_kwargs: module.subprocess.CompletedProcess(
+            command,
+            23,
+            stdout="",
+            stderr="permission denied",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match=r"Docker filesystem helper failed.*permission denied"):
+        module._docker_copy_tree("deeptutor:test", source, tmp_path / "destination")
+
+
+def test_docker_smoke_uses_container_copy_and_reclaims_temp_tree(monkeypatch, tmp_path) -> None:
+    module = _load_module()
+    copy_calls: list[tuple[str, Path, Path]] = []
+    reclaim_calls: list[tuple[str, Path]] = []
+
+    class FakeTemporaryDirectory:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def __enter__(self) -> str:
+            return str(tmp_path)
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+    @contextmanager
+    def fake_docker_container(_image: str, _data_dir: Path):
+        yield "http://api", "http://frontend"
+
+    monkeypatch.setattr(module.tempfile, "TemporaryDirectory", FakeTemporaryDirectory)
+    monkeypatch.setattr(module, "_assert_docker_web_portable", lambda _image: None)
+    monkeypatch.setattr(module, "_docker_container", fake_docker_container)
+    monkeypatch.setattr(module, "_verify_surfaces", lambda *_args: None)
+    monkeypatch.setattr(module, "_seed_attempt", lambda _api: "attempt-1")
+    monkeypatch.setattr(module, "_verify_persisted", lambda *_args: None)
+    monkeypatch.setattr(
+        module,
+        "_docker_copy_tree",
+        lambda image, source, destination: copy_calls.append((image, source, destination)),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        module,
+        "_reclaim_docker_tree",
+        lambda image, root: reclaim_calls.append((image, root)),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        module.shutil,
+        "copytree",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("host-side copytree must not read container-owned data")
+        ),
+    )
+
+    module._run_docker_smoke("deeptutor:test")
+
+    assert copy_calls == [
+        (
+            "deeptutor:test",
+            tmp_path / "original-data",
+            tmp_path / "backup-data",
+        ),
+        (
+            "deeptutor:test",
+            tmp_path / "backup-data",
+            tmp_path / "restored-data",
+        ),
+    ]
+    assert reclaim_calls == [("deeptutor:test", tmp_path)]
+
+
+def test_docker_smoke_preserves_primary_and_reclaim_failures(monkeypatch, tmp_path) -> None:
+    module = _load_module()
+
+    class FakeTemporaryDirectory:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def __enter__(self) -> str:
+            return str(tmp_path)
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+    @contextmanager
+    def fake_docker_container(_image: str, _data_dir: Path):
+        yield "http://api", "http://frontend"
+
+    monkeypatch.setattr(module.tempfile, "TemporaryDirectory", FakeTemporaryDirectory)
+    monkeypatch.setattr(module, "_assert_docker_web_portable", lambda _image: None)
+    monkeypatch.setattr(module, "_docker_container", fake_docker_container)
+    monkeypatch.setattr(module, "_verify_surfaces", lambda *_args: None)
+    monkeypatch.setattr(
+        module,
+        "_seed_attempt",
+        lambda _api: (_ for _ in ()).throw(RuntimeError("seed failed")),
+    )
+    monkeypatch.setattr(
+        module,
+        "_reclaim_docker_tree",
+        lambda _image, _root: (_ for _ in ()).throw(RuntimeError("reclaim failed")),
+    )
+
+    with pytest.raises(BaseExceptionGroup) as exc_info:
+        module._run_docker_smoke("deeptutor:test")
+
+    assert [str(exc) for exc in exc_info.value.exceptions] == [
+        "seed failed",
+        "reclaim failed",
+    ]
