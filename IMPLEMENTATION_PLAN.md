@@ -1,11 +1,11 @@
 # TJM 実装計画
 
-更新: 2026-08-15_11:23 (Asia/Tokyo)
+更新: 2026-08-15_11:33 (Asia/Tokyo)
 
 ## 1. 状態
 
-- 計画状態: 未完了（中核とローカル受入は完了、remote CIと外部受入を継続中）
-- 現在のチェックポイント: CP-14 配布と永続化（remote CI確認中）
+- 計画状態: 未完了（中核とローカル受入は完了、forkのworkflow有効化と外部受入を継続中）
+- 現在のチェックポイント: CP-14 配布と永続化（forkのworkflow有効化待ち）
 - 作業ブランチ: `tjm/implementation`
 - 基準: DeepTutor v1.5.8 / `44fa7a1552b88f9d8ce2c22259128a15ae2eb0c8`
 - リポジトリルート: `/home/tn/projects/DeepTutor`
@@ -20,7 +20,7 @@
 | 段階 | 完成条件 | 現状 |
 | --- | --- | --- |
 | A. 中核実装 | 正式問題、採点、回答、期限、復習、廃止版、合否、利用者分離の契約と自動テストが成立 | 完了 |
-| B. 配布可能 | clean build/wheel install、Docker再作成、永続化、backup/restore、CIが再現可能 | ローカル検証完了、remote CI待ち |
+| B. 配布可能 | clean build/wheel install、Docker再作成、永続化、backup/restore、CIが再現可能 | ローカル検証完了、forkのworkflow有効化とremote CI待ち |
 | C. 製品受入 | 日本語UI、操作型E2E、音声自動検証、実端末、権利確認済み宅建問題での完走 | 自動化可能部分は完了、Pixel 9a・権利確認済み実データは外部待ち |
 | D. ユーザー判断 | Draft PRで証拠を確認し、merge・公開・配備をユーザーが判断 | 未実施 |
 
@@ -269,7 +269,7 @@ Webは正式正解をローカル判定せず、practiceの確定応答または
 
 依存: CP-13
 
-状態: 進行中（ローカル検証完了、remote CI待ち）
+状態: 進行中（ローカル検証完了、forkのworkflow有効化とremote CI待ち）
 
 完了条件:
 
@@ -501,7 +501,7 @@ Webは正式正解をローカル判定せず、practiceの確定応答または
 | 音声候補DB境界 | Learning migration v6、candidate/confirm/cancelのSQLite参照制約 | 候補はattempt・position・版・未解決状態へ結び付き、別問題・旧候補・二重確定・直接SQL迂回を拒否。独立再監査で未解決P0/P1/P2なし |
 | 最終中核回帰 | `pytest -q` | 3811 passed、8 skipped、9 warnings、44.16秒。既知のCatalog並行初期化失敗は再発せず |
 
-## 16.2 CP-14 証拠台帳（remote CI待ち）
+## 16.2 CP-14 証拠台帳（forkのworkflow有効化待ち）
 
 | 項目 | コマンド/証拠 | 結果 |
 | --- | --- | --- |
@@ -516,7 +516,8 @@ Webは正式正解をローカル判定せず、practiceの確定応答または
 | compose契約 | source/GHCR/Podman/development composeの正規化 | data root全体の永続化、loopback既定、fork/local image、PocketBase `/pb_data`、Next proxy説明を統一。base、base+dev、GHCR、`compose.yaml`の4構成を検証 |
 | release fail-closed | Docker/PyPI workflow | repository variableで外部公開を明示許可制にし、Dockerはtag/version・main・同一SHAの`Test Summary`・arm64 preflightを要求し、自動`latest`を抑止。PyPIも同一SHAの`Test Summary`成功と未使用versionを公開前に要求 |
 | workflow静的検査 | actionlint v1.7.8、PyYAML parse、compose/release契約test | 3 workflowすべて成功、compose/release契約9 tests成功。docs・Docker teardownを含む局所回帰は25 tests成功 |
-| remote CI | Draft PR #1の次回pushで起動する`Tests` workflow | 未確認。必須jobと`Test Summary`が実際にsuccessになるまでCP-14/Bを完了にしない |
+| commit/push | `a89a2531`、`08a1a9f6`を`origin/tjm/implementation`へpush | 成功。PR #1はhead `08a1a9f6`、競合なし、Draftのまま |
+| remote CI | Actions permission、workflow一覧、run一覧、head SHAのcheck-runsをGitHub APIで確認 | repositoryのActions permissionは有効、PRはmergeable、`main`にはworkflow 3本が存在する一方、登録workflow、run、check-runはすべて0。forkではActionsタブでworkflow有効化が必要という[GitHub公式仕様](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflows-in-forked-repositories)と一致する。所有者が有効化して同一branchを再実行するまで`Test Summary`は未確認で、CP-14/Bを完了にしない |
 | arm64 | `workflow_dispatch verify_arm64=true` | 未実行の任意preflight。GHCR multi-arch releaseを許可する場合は成功を必須とする |
 
 ## 16.3 CP-15 証拠台帳（内部完了、外部待ち）
@@ -550,6 +551,7 @@ Webは正式正解をローカル判定せず、practiceの確定応答または
 - VAD packageは自己配信できるが、実microphone可否・permission・AudioWorkletはbrowser/device依存である。Chromium fake microphoneで実経路を検証し、失敗時は画面回答へ戻れるようにした。実端末・主要ブラウザ全組合せの認証は配備側の受入試験として残る。
 - arm64 Dockerはlocal builderで実行できず、GitHub ActionsのQEMU preflightも未実行である。amd64配布は実測済みだが、multi-arch GHCR公開は同一SHAのarm64 preflight成功をrelease workflowで必須化した。
 - PyPIの`deeptutor==1.5.8`と同名wheel filenameは既に公開済みで、同一filenameは再利用できない。`ENABLE_PYPI_RELEASE`は既定無効とし、未使用versionと既存project権限を確認するかfork固有distribution名を決めるまで公開しない。
+- forkのActions permission自体は有効だが、GitHub APIではworkflowが未登録でrun/check-runも0である。Actionsタブでworkflowを有効化し、同一SHA相当の必須jobと`Test Summary`が成功するまでremote CI成功を主張しない。
 
 ## 18. 追加監査の再現証拠
 

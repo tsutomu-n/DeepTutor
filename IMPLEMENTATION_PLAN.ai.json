@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "updated_at": "2026-08-15_11:23",
+  "updated_at": "2026-08-15_11:33",
   "timezone": "Asia/Tokyo",
   "status": "in_progress",
   "current_checkpoint": "CP-14",
@@ -514,7 +514,7 @@
         "independent_review": "no unresolved P0, P1, or P2 after the V6 foreign-key and trigger audit"
       },
       "distribution_and_internal_acceptance": {
-        "status": "completed_locally_ci_pending",
+        "status": "completed_locally_ci_blocked_owner_action",
         "python_full": {"passed": 3811, "skipped": 8, "warnings": 9, "seconds": 44.16},
         "web": {
           "node_24_tests": 426,
@@ -542,7 +542,17 @@
         "release_contract_tests": 9,
         "release_controls": "external publication is variable-gated; Docker requires matching version, main ancestry, same-SHA Test Summary, explicit stable or prerelease aliases, and arm64 preflight while automatic latest is disabled; PyPI requires same-SHA Test Summary and rejects an existing version before publish",
         "arm64": "optional QEMU preflight not run",
-        "remote_ci": "not run for the unpublished workspace changes"
+        "remote_ci": {
+          "status": "blocked_fork_workflows_not_registered",
+          "pushed_head": "08a1a9f67d4dc0b3499d0fcbcac6f5e24d5deea1",
+          "actions_permission_enabled": true,
+          "default_branch_workflow_files": 3,
+          "registered_workflows": 0,
+          "workflow_runs": 0,
+          "check_runs": 0,
+          "pull_request_mergeable": true,
+          "required_owner_action": "enable workflows in the fork Actions tab, then rerun or synchronize the branch; required jobs and Test Summary must succeed"
+        }
       }
     }
   },
@@ -556,7 +566,7 @@
     {
       "id": "B",
       "name": "distributable",
-      "status": "in_progress_ci_pending",
+      "status": "in_progress_owner_action",
       "requires": ["clean_build", "wheel_install_smoke", "docker_recreate_persistence", "backup_restore", "ci"]
     },
     {
@@ -590,12 +600,18 @@
   ],
   "publication": {
     "feature_commit": "80339c862d11c9432ca9c20be7b8b6bff6c98536",
-    "latest_remote_commit": "5219ef0f4fde6fe0036b5b59b31a0143bfd38263",
+    "latest_remote_commit": "08a1a9f67d4dc0b3499d0fcbcac6f5e24d5deea1",
     "remote_branch": "origin/tjm/implementation",
     "remote_ci": {
-      "status": "no_checks_before_next_push",
+      "status": "blocked_fork_workflows_not_registered",
+      "actions_permission_enabled": true,
+      "default_branch_workflow_files": 3,
+      "registered_workflows": 0,
       "workflow_runs": 0,
-      "completion_gate": "required jobs and Test Summary must succeed after the next push"
+      "check_runs": 0,
+      "pull_request_mergeable": true,
+      "required_owner_action": "enable workflows in the fork Actions tab and rerun or synchronize the branch",
+      "completion_gate": "required jobs and Test Summary must succeed before CP-14 and stage B can complete"
     },
     "pull_request": {
       "number": 1,
@@ -671,7 +687,7 @@
     {
       "id": "CP-14",
       "title": "配布と永続化",
-      "status": "in_progress",
+      "status": "in_progress_owner_action",
       "depends_on": ["CP-13"]
     },
     {
