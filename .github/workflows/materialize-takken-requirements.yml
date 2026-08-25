@@ -29,16 +29,25 @@ jobs:
           SHA='docs/exam_prep/takken/DeepTutor_Takken_ExamPrep_Requirements_Final_2026-08-23.zip.sha256'
 
           cat \
-            "$STAGE/part00.b64" \
+            "$STAGE/fixed0a.b64" \
+            "$STAGE/fixed0b.b64" \
+            "$STAGE/fixed0c.b64" \
             "$STAGE/part01.b64" \
-            "$STAGE/part02.b64" \
+            "$STAGE/fixed2a.b64" \
+            "$STAGE/fixed2b.b64" \
+            "$STAGE/fixed2c.b64" \
             "$STAGE/part03.b64" \
-            "$STAGE"/r{00..18}.b64 \
+            "$STAGE/r00.b64" \
+            "$STAGE"/r{03..18}.b64 \
             > /tmp/takken-requirements.b64
 
-          test "$(wc -c < /tmp/takken-requirements.b64)" -eq 108444
+          actual_b64_size="$(wc -c < /tmp/takken-requirements.b64)"
+          echo "base64 bytes: $actual_b64_size"
+          test "$actual_b64_size" -eq 108444
           base64 --decode /tmp/takken-requirements.b64 > "$ZIP"
-          test "$(stat -c%s "$ZIP")" -eq 81332
+          actual_zip_size="$(stat -c%s "$ZIP")"
+          echo "zip bytes: $actual_zip_size"
+          test "$actual_zip_size" -eq 81332
           echo '48be5edcc4595d685517dc271256c6b9719167b2ee68d9435dafed19bea9481b  '"$ZIP" | sha256sum --check -
           unzip -t "$ZIP"
           printf '%s  %s\n' \
