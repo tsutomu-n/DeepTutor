@@ -1,0 +1,69 @@
+name: Materialize Takken requirements archive
+
+on:
+  push:
+    branches:
+      - codex/takken-exam-prep-requirements-v2.1
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout handoff branch
+        uses: actions/checkout@v4
+        with:
+          ref: codex/takken-exam-prep-requirements-v2.1
+          fetch-depth: 0
+
+      - name: Reconstruct and verify ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE='docs/exam_prep/takken/.zip_upload'
+          ZIP='docs/exam_prep/takken/DeepTutor_Takken_ExamPrep_Requirements_Final_2026-08-23.zip'
+          SHA='docs/exam_prep/takken/DeepTutor_Takken_ExamPrep_Requirements_Final_2026-08-23.zip.sha256'
+
+          cat \
+            "$STAGE/fixed0a.b64" \
+            "$STAGE/fixed0b.b64" \
+            "$STAGE/fixed0c.b64" \
+            "$STAGE/part01.b64" \
+            "$STAGE/fixed2a.b64" \
+            "$STAGE/fixed2b.b64" \
+            "$STAGE/fixed2c.b64" \
+            "$STAGE/part03.b64" \
+            "$STAGE/r00.b64" \
+            "$STAGE"/r{03..18}.b64 \
+            > /tmp/takken-requirements.b64
+
+          actual_b64_size="$(wc -c < /tmp/takken-requirements.b64)"
+          echo "base64 bytes: $actual_b64_size"
+          test "$actual_b64_size" -eq 108444
+          base64 --decode /tmp/takken-requirements.b64 > "$ZIP"
+          actual_zip_size="$(stat -c%s "$ZIP")"
+          echo "zip bytes: $actual_zip_size"
+          test "$actual_zip_size" -eq 81332
+          echo '48be5edcc4595d685517dc271256c6b9719167b2ee68d9435dafed19bea9481b  '"$ZIP" | sha256sum --check -
+          unzip -t "$ZIP"
+          printf '%s  %s\n' \
+            '48be5edcc4595d685517dc271256c6b9719167b2ee68d9435dafed19bea9481b' \
+            'DeepTutor_Takken_ExamPrep_Requirements_Final_2026-08-23.zip' \
+            > "$SHA"
+
+      - name: Commit verified archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            docs/exam_prep/takken/DeepTutor_Takken_ExamPrep_Requirements_Final_2026-08-23.zip \
+            docs/exam_prep/takken/DeepTutor_Takken_ExamPrep_Requirements_Final_2026-08-23.zip.sha256
+          git diff --cached --quiet && exit 0
+          git commit -m 'docs: add verified Takken ExamPrep requirements archive'
+          git push origin HEAD:codex/takken-exam-prep-requirements-v2.1
