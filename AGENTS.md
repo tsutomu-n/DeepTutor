@@ -3,6 +3,10 @@
 ## Overview
 
 DeepTutor is an **agent-native** intelligent learning companion organized
+
+```
+```
+
 around a two-layer plugin model — single-shot **Tools** invoked by the
 LLM, and multi-stage **Capabilities** that take over a turn — exposed
 through three entry points: CLI, WebSocket API, and Python SDK.
@@ -34,8 +38,8 @@ ignored.
 Single-function tools the LLM picks on demand. Four user-toggleable tools
 surface in `/settings/tools`:
 
-| Tool           | Description                                   |
-| -------------- | --------------------------------------------- |
+| Tool             | Description                                   |
+| ---------------- | --------------------------------------------- |
 | `brainstorm`   | Breadth-first idea exploration with rationale |
 | `web_search`   | Web search with citations                     |
 | `paper_search` | arXiv preprint search                         |
@@ -55,15 +59,15 @@ mastery-path tools. `geogebra_analysis` is parked under
 
 Multi-stage pipelines that own the turn:
 
-| Capability       | Stages                                                |
-| ---------------- | ----------------------------------------------------- |
-| `chat`           | exploring → responding (single agentic loop, default) |
-| `mastery_path`   | responding (Guided Learning — chat loop + mastery tools, gated per topic type) |
-| `deep_solve`     | planning → reasoning → writing                        |
-| `deep_question`  | ideation → generation                                 |
-| `deep_research`  | rephrasing → decomposing → researching → reporting    |
-| `visualize`      | analyzing → generating → reviewing (SVG / Chart.js / Mermaid / HTML; or routes to Manim sub-stages via `render_type`) |
-| `math_animator`  | concept_analysis → concept_design → code_generation → code_retry → summary → render_output |
+| Capability        | Stages                                                                                                                   |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `chat`          | exploring → responding (single agentic loop, default)                                                                   |
+| `mastery_path`  | responding (Guided Learning — chat loop + mastery tools, gated per topic type)                                          |
+| `deep_solve`    | planning → reasoning → writing                                                                                         |
+| `deep_question` | ideation → generation                                                                                                   |
+| `deep_research` | rephrasing → decomposing → researching → reporting                                                                    |
+| `visualize`     | analyzing → generating → reviewing (SVG / Chart.js / Mermaid / HTML; or routes to Manim sub-stages via`render_type`) |
+| `math_animator` | concept_analysis → concept_design → code_generation → code_retry → summary → render_output                          |
 
 All capabilities converge on `emit_capability_result()` in
 `deeptutor/capabilities/_shared.py` so every turn emits the same envelope
@@ -99,22 +103,22 @@ deeptutor start                   # backend + frontend together
 
 ## Key Files
 
-| Path                                       | Purpose                              |
-| ------------------------------------------ | ------------------------------------ |
-| `deeptutor/runtime/orchestrator.py`        | `ChatOrchestrator` — unified entry   |
-| `deeptutor/runtime/launcher.py`            | Backend + frontend lifecycle / port discovery |
-| `deeptutor/runtime/registry/`              | Tool + Capability registries         |
-| `deeptutor/runtime/bootstrap/builtin_capabilities.py` | Built-in capability class paths |
-| `deeptutor/services/config/runtime_settings.py` | JSON settings + process-env overrides |
-| `deeptutor/core/stream.py`, `stream_bus.py` | StreamEvent protocol + async fan-out |
-| `deeptutor/core/tool_protocol.py`          | `BaseTool` + `ToolDefinition`         |
-| `deeptutor/core/capability_protocol.py`    | `BaseCapability` + `CapabilityManifest` |
-| `deeptutor/core/context.py`                | `UnifiedContext` dataclass            |
-| `deeptutor/tools/builtin/__init__.py`      | All built-in tool wrappers           |
-| `deeptutor/capabilities/`                  | Built-in capability implementations  |
-| `deeptutor/app.py`                         | `DeepTutorApp` — Python SDK facade    |
-| `deeptutor_cli/main.py`                    | Typer CLI entry point                |
-| `deeptutor/api/routers/unified_ws.py`      | Unified WebSocket endpoint           |
+| Path                                                    | Purpose                                       |
+| ------------------------------------------------------- | --------------------------------------------- |
+| `deeptutor/runtime/orchestrator.py`                   | `ChatOrchestrator` — unified entry         |
+| `deeptutor/runtime/launcher.py`                       | Backend + frontend lifecycle / port discovery |
+| `deeptutor/runtime/registry/`                         | Tool + Capability registries                  |
+| `deeptutor/runtime/bootstrap/builtin_capabilities.py` | Built-in capability class paths               |
+| `deeptutor/services/config/runtime_settings.py`       | JSON settings + process-env overrides         |
+| `deeptutor/core/stream.py`, `stream_bus.py`         | StreamEvent protocol + async fan-out          |
+| `deeptutor/core/tool_protocol.py`                     | `BaseTool` + `ToolDefinition`             |
+| `deeptutor/core/capability_protocol.py`               | `BaseCapability` + `CapabilityManifest`   |
+| `deeptutor/core/context.py`                           | `UnifiedContext` dataclass                  |
+| `deeptutor/tools/builtin/__init__.py`                 | All built-in tool wrappers                    |
+| `deeptutor/capabilities/`                             | Built-in capability implementations           |
+| `deeptutor/app.py`                                    | `DeepTutorApp` — Python SDK facade         |
+| `deeptutor_cli/main.py`                               | Typer CLI entry point                         |
+| `deeptutor/api/routers/unified_ws.py`                 | Unified WebSocket endpoint                    |
 
 ## Dependency Layers
 
