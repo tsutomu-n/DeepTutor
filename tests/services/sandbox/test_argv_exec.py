@@ -85,8 +85,7 @@ def test_bwrap_keeps_using_a_shell_for_a_shell_request() -> None:
 
 
 def test_the_sidecar_sends_both_spellings() -> None:
-    """An older runner ignores ``argv``; a newer one prefers it. Both must be
-    present or the protocol only works in one deploy direction."""
+    """The versioned runner receives both equivalent request spellings."""
     captured: dict[str, object] = {}
 
     class _Client:
@@ -96,7 +95,9 @@ def test_the_sidecar_sends_both_spellings() -> None:
         async def __aexit__(self, *exc: object) -> None:
             return None
 
-        async def post(self, url: str, json: dict) -> object:
+        async def post(self, url: str, json: dict, *, headers: dict[str, str]) -> object:
+            captured["url"] = url
+            captured["headers"] = headers
             captured.update(json)
 
             class _Response:
@@ -106,11 +107,17 @@ def test_the_sidecar_sends_both_spellings() -> None:
 
                 @staticmethod
                 def json() -> dict:
-                    return {"stdout": "", "stderr": "", "exit_code": 0}
+                    return {
+                        "stdout": "",
+                        "stderr": "",
+                        "exit_code": 0,
+                        "security_profile": "landlock-v6-fd-v3",
+                    }
 
             return _Response()
 
-    backend = RunnerSidecarBackend("http://runner:8900")
+    control_token = "test-runner-control-token-" * 2
+    backend = RunnerSidecarBackend("http://runner:8900", control_token=control_token)
     import deeptutor.services.sandbox.backends as backends_module
 
     original = backends_module.httpx.AsyncClient
@@ -122,6 +129,8 @@ def test_the_sidecar_sends_both_spellings() -> None:
 
     assert captured["argv"] == ["/bin/echo", "a b"]
     assert captured["command"] == shlex.join(["/bin/echo", "a b"])
+    assert captured["url"] == "http://runner:8900/v3/exec"
+    assert captured["headers"] == {"Authorization": f"Bearer {control_token}"}
 
 
 @pytest.mark.parametrize("argument", HOSTILE_ARGS)
@@ -155,8 +164,27 @@ def test_the_shell_fallback_is_quoted_well_enough_to_be_equivalent(argument: str
 # ── the runner's own end of the wire ──────────────────────────────────────
 
 
-def test_the_runner_prefers_argv_over_the_shell_string() -> None:
+def _capture_worker(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    captured: dict[str, object] = {}
+
+    def _capture(**kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return {
+            "stdout": "",
+            "stderr": "",
+            "exit_code": 0,
+            "timed_out": False,
+            "error": "",
+            "security_profile": runner_server.SECURITY_PROFILE,
+        }
+
+    monkeypatch.setattr(runner_server, "_run_worker", _capture)
+    return captured
+
+
+def test_the_runner_prefers_argv_over_the_shell_string(monkeypatch: pytest.MonkeyPatch) -> None:
     """Sent both, it must run the vector — that is what makes the arguments data."""
+    captured = _capture_worker(monkeypatch)
     result = runner_server.execute(
         {
             "command": "/bin/echo shell-form",
@@ -165,15 +193,24 @@ def test_the_runner_prefers_argv_over_the_shell_string() -> None:
         }
     )
     assert result["error"] == ""
-    assert result["stdout"].strip() == "argv-form"
+    assert captured["argv"] == ["/bin/echo", "argv-form"]
+    assert captured["command"] == "/bin/echo shell-form"
 
 
-def test_the_runner_runs_the_shell_string_when_no_argv_is_sent() -> None:
+def test_the_runner_runs_the_shell_string_when_no_argv_is_sent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = _capture_worker(monkeypatch)
     result = runner_server.execute({"command": "echo a && echo b", "limits": {"timeout_s": 10}})
-    assert result["stdout"].split() == ["a", "b"]
+    assert result["error"] == ""
+    assert captured["argv"] == []
+    assert captured["command"] == "echo a && echo b"
 
 
-def test_the_runner_does_not_expand_a_hostile_argv_element() -> None:
+def test_the_runner_does_not_expand_a_hostile_argv_element(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = _capture_worker(monkeypatch)
     result = runner_server.execute(
         {
             "command": "unused",
@@ -181,7 +218,8 @@ def test_the_runner_does_not_expand_a_hostile_argv_element() -> None:
             "limits": {"timeout_s": 10},
         }
     )
-    assert result["stdout"].strip() == "$HOME; rm -rf /"
+    assert result["error"] == ""
+    assert captured["argv"] == ["/bin/echo", "$HOME; rm -rf /"]
 
 
 @pytest.mark.parametrize("bad", [{"argv": "echo hi"}, {"argv": ["ok", 7]}])

@@ -33,11 +33,12 @@ dependencies = [
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
     "aiosqlite>=0.19.0",
+    "croniter>=6.0.0,<7.0.0",
     "typer[all]>=0.9.0",
     "rich>=13.0.0",
     "prompt_toolkit>=3.0.36",
     "pyte>=0.8.1",  # in-memory terminal emulator: scrape Claude Code's /model TUI on sync
-    # Full app dependencies included by default for `pip install deeptutor`.
+    # Full-app dependencies included by the root source install.
     "anthropic>=0.30.0",
     "dashscope>=1.14.0",
     "perplexityai>=0.1.0",
@@ -74,8 +75,8 @@ dependencies = [
 deeptutor = "deeptutor_cli.main:main"
 
 [project.optional-dependencies]
-# Compatibility extra for source installs and older docs. These packages are
-# already included in the public `deeptutor` wheel; the local CLI-only project
+# Compatibility extra for source installs and older automation. These packages
+# are already included in the root source install; the local CLI-only project
 # under `packaging/deeptutor-cli` uses the same list without Web assets/server deps.
 cli = [
     # LLM provider SDKs
@@ -102,10 +103,11 @@ cli = [
     "pdfplumber>=0.11.0,<0.11.8",  # 0.11.8+ pins pdfminer.six==20251230, conflicts with mineru (via raganything)
     "reportlab>=4.0.0",
     "defusedxml>=0.7.1",
+    "croniter>=6.0.0,<7.0.0",
 ]
 
-# Compatibility extra for source installs and older docs. These packages are
-# already included in the public `deeptutor` wheel.
+# Compatibility extra for source installs and older automation. The root source
+# install already includes these packages.
 server = [
     "deeptutor[cli]",
     "fastapi>=0.100.0",
@@ -117,7 +119,6 @@ server = [
     "pocketbase>=0.12.0",
     "loguru>=0.7.3,<1.0.0",
     "json-repair>=0.57.0,<1.0.0",
-    "croniter>=6.0.0,<7.0.0",
 ]
 
 # Partner channel SDKs + MCP client. Mirrors requirements/partners.txt.
@@ -168,7 +169,8 @@ parse = [
     "deeptutor[parse-pymupdf4llm]",
 ]
 
-# Legacy alias kept for one release: `pip install deeptutor[tutorbot]`.
+# Legacy source-install alias kept for one release:
+# `python -m pip install -e ".[tutorbot]"`.
 tutorbot = ["deeptutor[partners]"]
 
 # Matrix (Element) channel for partners. Mirrors requirements/matrix.txt.
@@ -259,8 +261,8 @@ include = ["deeptutor*", "deeptutor_cli*"]
 # Runtime data shipped inside the deeptutor package: prompt YAMLs (loaded by
 # PromptManager from PACKAGE_ROOT/deeptutor/.../prompts/*.yaml), markdown
 # templates (builtin SKILL.md files, vision_solver prompts), and helper shell
-# scripts. Without these, ``pip install deeptutor`` ships a wheel missing
-# every agent prompt and capability fails at first use.
+# scripts. Without these, a built wheel is missing every agent prompt and a
+# capability fails at first use.
 deeptutor = [
     "**/*.yaml",
     "**/*.yml",

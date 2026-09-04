@@ -7,9 +7,12 @@ Agent-first 的命令行界面。两条核心路径：
 
 ## 安装
 
+此 JustPass private fork 仅支持从授权的源码 checkout 安装，并要求 Python
+`>=3.11,<3.14`。以下两种安装方式请选择其一。
+
 ```bash
 # 仅 CLI（本地源码安装，含 RAG / 文档解析 / 各家 LLM provider SDK）
-git clone https://github.com/HKUDS/DeepTutor.git
+git clone --branch tjm/implementation --single-branch https://github.com/tsutomu-n/DeepTutor.git
 cd DeepTutor
 python3 -m venv .venv-cli
 source .venv-cli/bin/activate
@@ -17,18 +20,15 @@ python -m pip install --upgrade pip
 python -m pip install -e ./packaging/deeptutor-cli
 deeptutor init --cli
 
-# CLI + Web/API 服务
-pip install deeptutor
-deeptutor init
-
-# 源码开发
-pip install -e .
+# CLI + Web/API 服务（在单独的环境中，从同一源码 checkout 安装）
+python -m pip install -e .
+( cd web && npm ci --legacy-peer-deps )
 deeptutor init
 
 # 可选附加组件
-pip install -e ".[partners]"       # Partners 渠道 SDK + MCP 客户端
-pip install -e ".[math-animator]"  # 数学动画（另需系统 LaTeX/ffmpeg）
-pip install -e ".[all]"            # 全部依赖（含开发工具）
+python -m pip install -e ".[partners]"       # Partners 渠道 SDK + MCP 客户端
+python -m pip install -e ".[math-animator]"  # 数学动画（另需系统 LaTeX/ffmpeg）
+python -m pip install -e ".[all]"            # 全部依赖（含开发工具）
 ```
 
 `deeptutor init --cli` 和普通 `deeptutor init` 使用同一套 `data/user/settings/` 配置目录；区别是 `--cli` 不询问 Web 后端/前端端口，仍会创建 `system.json`、`auth.json`、`integrations.json`、`model_catalog.json`、`main.yaml` 和 `agents.yaml`，并继续询问 LLM 配置。Embedding 配置默认跳过；如果要使用 `deeptutor kb ...` 或 RAG，请在向导里选择配置 embedding，或稍后编辑 `data/user/settings/model_catalog.json`。
@@ -161,7 +161,9 @@ deeptutor chat [options]
 deeptutor serve [--host 0.0.0.0] [--port 8001] [--reload]
 ```
 
-`deeptutor serve` 需要完整 Web/API 依赖；如果你是通过本地 `./packaging/deeptutor-cli` 安装的 CLI-only 包，请先卸载本地 CLI 包并切换到 `pip install -U deeptutor`。
+`deeptutor serve` 需要完整 Web/API 依赖；如果你是通过本地
+`./packaging/deeptutor-cli` 安装的 CLI-only 包，请先卸载该distribution，
+再从同一个授权源码checkout运行`python -m pip install -e .`。
 
 ---
 

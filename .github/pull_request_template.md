@@ -1,39 +1,15 @@
-<!--
-Thank you for contributing to DeepTutor! 🚀
-Please ensure your PR is ready for review and follows our contribution guidelines.
-For more details, see our [CONTRIBUTING.md](https://github.com/HKUDS/DeepTutor/blob/dev/CONTRIBUTING.md).
--->
+## Summary
 
-### Description
-*A clear and concise description of the changes.*
+<!-- What changed, and why? -->
 
-### Related Issues
-- Closes #...
-- Related to #...
+## Validation
 
-### Module(s) Affected
-- [ ] `agents`
-- [ ] `api`
-- [ ] `config`
-- [ ] `core`
-- [ ] `knowledge`
-- [ ] `logging`
-- [ ] `services`
-- [ ] `tools`
-- [ ] `utils`
-- [ ] `web` (Frontend)
-- [ ] `docs` (Documentation)
-- [ ] `scripts`
-- [ ] `tests`
-- [ ] Other: `...`
+<!-- List checks that ran, failures, and important checks not run. -->
 
-### Checklist
-- [ ] I have read and followed the [contribution guidelines](https://github.com/HKUDS/DeepTutor/blob/dev/CONTRIBUTING.md).
-- [ ] My code follows the project's coding standards.
-- [ ] I have run `pre-commit run --all-files` and fixed any issues.
-- [ ] I have added relevant tests for my changes.
-- [ ] I have updated the documentation (if necessary).
-- [ ] My changes do not introduce any new security vulnerabilities.
+## Risks or follow-up
 
-### Additional Notes
-*Add any other context or screenshots about the pull request here.*
+<!-- Note known risks, migrations, deployment steps, or follow-up work. -->
+
+- [ ] The change is intended for `main`.
+- [ ] No credentials, private data, or unrelated working-tree changes are included.
+- [ ] Documentation was updated if behavior, configuration, or installation changed.

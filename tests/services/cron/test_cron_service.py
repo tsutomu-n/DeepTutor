@@ -36,13 +36,11 @@ class TestComputeNextRun:
         assert compute_next_run(CronSchedule(kind="every", every_seconds=0), now) is None
 
     def test_cron_expression(self):
-        pytest.importorskip("croniter")
         now = _now_ms()
         result = compute_next_run(CronSchedule(kind="cron", expr="0 9 * * *"), now)
         assert result is not None and result > now
 
     def test_bad_cron_expression_raises(self):
-        pytest.importorskip("croniter")
         with pytest.raises(ValueError):
             compute_next_run(CronSchedule(kind="cron", expr="not a cron"), _now_ms())
 
@@ -57,7 +55,6 @@ class TestValidateSchedule:
             validate_schedule(CronSchedule(kind="every", every_seconds=5))
 
     def test_rejects_unknown_tz(self):
-        pytest.importorskip("croniter")
         with pytest.raises(ValueError):
             validate_schedule(CronSchedule(kind="cron", expr="0 9 * * *", tz="Mars/Olympus"))
 

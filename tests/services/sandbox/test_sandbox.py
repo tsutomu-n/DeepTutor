@@ -16,7 +16,10 @@ from deeptutor.services.sandbox.spec import ExecRequest, ExecResult, IsolationLe
 def test_backend_selection_runner_url() -> None:
     from deeptutor.services.sandbox.backends import RunnerSidecarBackend
 
-    settings = SandboxSettings(runner_url="http://sandbox-runner:8900")
+    settings = SandboxSettings(
+        runner_url="http://sandbox-runner:8900",
+        runner_token="test-runner-control-token-" * 2,
+    )
     backend = build_backend(settings)
     assert isinstance(backend, RunnerSidecarBackend)
     assert backend.level is IsolationLevel.SYSTEM
@@ -144,20 +147,19 @@ def test_runner_server_validates_request_shape() -> None:
     assert "limits" in server.execute({"command": "true", "limits": ["bad"]})["error"]
 
 
-def test_runner_server_executes_and_truncates_output() -> None:
+def test_runner_stream_buffer_is_bounded_while_data_arrives() -> None:
     from deeptutor.services.sandbox.runner import server
 
-    result = server.execute(
-        {
-            "command": "python -c \"print('x' * 200)\"",
-            "limits": {"timeout_s": 5, "max_output_chars": 40},
-        }
-    )
+    output = server._BoundedText(40)
+    for _ in range(128):
+        output.feed(b"x" * 64 * 1024)
+    output.finish()
+    rendered = output.render()
 
-    assert result["exit_code"] == 0
-    assert result["error"] == ""
-    assert "truncated" in result["stdout"]
-    assert len(result["stdout"]) < 120
+    assert "truncated" in rendered
+    assert rendered.startswith("x" * 20)
+    assert rendered.endswith("x" * 20)
+    assert len(rendered) < 120
 
 
 def test_runner_server_rejects_workdir_outside_allowed_roots(
@@ -168,15 +170,27 @@ def test_runner_server_rejects_workdir_outside_allowed_roots(
     allowed = tmp_path / "workspace"
     allowed.mkdir()
     monkeypatch.setattr(server, "_ALLOWED_WORKDIR_ROOTS", [str(allowed)])
+    monkeypatch.setattr(
+        server,
+        "_run_worker",
+        lambda **_kwargs: {
+            "stdout": "",
+            "stderr": "",
+            "exit_code": 0,
+            "timed_out": False,
+            "error": "",
+            "security_profile": server.SECURITY_PROFILE,
+        },
+    )
 
     outside = server.execute({"command": "true", "workdir": str(tmp_path / "elsewhere")})
-    assert "outside the shared workspace roots" in outside["error"]
+    assert "outside allowed roots" in outside["error"]
 
     # Symlinks that point out of the allowed tree must not slip through.
     sneaky = allowed / "link"
     sneaky.symlink_to(tmp_path)
     via_link = server.execute({"command": "true", "workdir": str(sneaky)})
-    assert "outside the shared workspace roots" in via_link["error"]
+    assert via_link["error"]
 
     inside = server.execute(
         {"command": "true", "workdir": str(allowed), "limits": {"timeout_s": 5}}

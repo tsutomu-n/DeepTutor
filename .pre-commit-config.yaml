@@ -10,6 +10,15 @@
 #   git commit  # Hooks run automatically on commit
 
 repos:
+  - repo: local
+    hooks:
+      - id: deeptutor-repo-hygiene
+        name: DeepTutor repository hygiene
+        entry: python3 scripts/check_repo_hygiene.py
+        language: system
+        pass_filenames: false
+        always_run: true
+
   # ============================================
   # General file checks
   # ============================================
@@ -69,7 +78,6 @@ repos:
       - id: detect-secrets
         args: ['--baseline', '.secrets.baseline']
         exclude: package-lock.json
-        pass_filenames: false
 
   # Replaced Safety with pip-audit due to version 3.x breakdown
   # NOTE: pip-audit disabled due to pip-api upstream bug with non-ASCII paths on Windows

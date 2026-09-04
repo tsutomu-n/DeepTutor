@@ -23,7 +23,7 @@ TJMフォークと同期しているガイドは英語版と日本語版だけ�
 上流版の履歴資料としてリポジトリに残していますが、このフォークのインストールや
 リリース手順には使用しないでください。
 
-[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/downloads/)
+[![Python 3.11–3.13](https://img.shields.io/badge/Python-3.11--3.13-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![Next.js 16](https://img.shields.io/badge/Next.js-16-000000?style=flat-square&logo=next.js&logoColor=white)](https://nextjs.org/)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue?style=flat-square)](../../LICENSE)
 [![GitHub release](https://img.shields.io/github/v/release/HKUDS/DeepTutor?style=flat-square&color=brightgreen)](https://github.com/HKUDS/DeepTutor/releases)
@@ -67,12 +67,12 @@ DeepTutorは、個別指導、問題解決、クイズ生成、研究、ビジ�
 
 ## 🚀 はじめに
 
-DeepTutorは4つのインストールパスを提供しています。すべてのパスは同じワークスペースレイアウトを共有します。設定はデプロイするディレクトリ下の`data/user/settings/`に保存されます（明示的に設定した場合は`DEEPTUTOR_HOME`/`deeptutor start --home`の下）。完全なアプリの場合は **ワークスペースディレクトリの選択 → インストール → `deeptutor init` → `deeptutor start`** がお勧めのフローです。
+このJustPass private forkは、認可されたソースチェックアウトからのみ配布します。以下のローカルソース、ローカルでビルドするコンテナ、CLIのみの各パスは同じワークスペースレイアウトを共有します。設定はデプロイするディレクトリ下の`data/user/settings/`に保存されます（明示的に設定した場合は`DEEPTUTOR_HOME`/`deeptutor start --home`の下）。完全なアプリの場合は **ワークスペースディレクトリの選択 → インストール → `deeptutor init` → `deeptutor start`** がお勧めのフローです。
 
 <details>
-<summary><b>オプション1 — PyPIからインストール</b> · このTJM forkでは未公開</summary>
+<summary><b>オプション1 — PyPIに関する注意</b> · このJustPass forkでは非対応</summary>
 
-公開中の[`deeptutor`](https://pypi.org/project/deeptutor/1.5.8/)は既存の上流packageで、TJMを含みません。このforkの検証済みwheelは未公開で、PyPI上のversion `1.5.8`も既に使用済みです。未使用versionと既存projectの公開権限を確認するか、fork固有のdistribution名を決めるまでは、次のソースインストールを使用してください。
+公開中の[`deeptutor`](https://pypi.org/project/deeptutor/1.5.8/)は既存の上流packageで、TJMを含みません。このforkはPyPIへ公開していません。このチェックアウトには公開distributionを使用せず、次の認可されたソースインストールを使用してください。
 
 </details>
 
@@ -98,7 +98,7 @@ deeptutor init
 deeptutor start --dev
 ```
 
-`deeptutor start`はローカルの`web/`フロントエンドを一度だけ本番用にビルドして再利用し、`--dev`はNext.jsをHMR（ホットリロード）付きで実行します。その他（設定レイアウト、ポート、`Ctrl+C`での停止）はオプション1と同じです。
+`deeptutor start`はローカルの`web/`フロントエンドを一度だけ本番用にビルドして再利用し、`--dev`はNext.jsをHMR（ホットリロード）付きで実行します。設定レイアウト、ポート、`Ctrl+C`での停止は同じソースワークスペースを使用します。
 
 <details>
 <summary><b>Conda環境</b>（<code>venv</code>の代わり）</summary>
@@ -243,7 +243,7 @@ deeptutor config show
 
 </details>
 
-ローカルの`deeptutor-cli`インストールにはWebアセットやサーバー依存関係がありません。ソースチェックアウトはそのままにしておいてください — 編集可能インストールはそれを参照します。後からWebアプリを追加するには、PyPIパッケージ（オプション1）をインストールして、同じワークスペースから`deeptutor init` + `deeptutor start`を実行してください。
+ローカルの`deeptutor-cli`インストールにはWebアセットやサーバー依存関係がありません。ソースチェックアウトはそのままにしておいてください — 編集可能インストールはそれを参照します。後からWebアプリを追加するには、必要に応じてCLIのみのdistributionをアンインストールし、同じチェックアウトで`python -m pip install -e .`を実行して`web/`の依存関係をインストールした後、同じワークスペースから`deeptutor init` + `deeptutor start`を実行してください。
 
 </details>
 
@@ -252,8 +252,12 @@ deeptutor config show
 
 組み込みオフィススキル — **docx / pdf / pptx / xlsx** — は、モデルが短いPythonスクリプト（`python-docx`、`reportlab`、`openpyxl`など）を書き、`exec` / `code_execution`ツールで実行し、ダウンロードURLを返すことで機能します。これらのツールはサンドボックスバックエンドがアクティブなときにマウントされ、すべてのデプロイメント形態でデフォルトでアクティブです：
 
-- **ローカル（オプション1/2）とDocker（オプション3、単一コンテナ）：** 制限付きサブプロセスサンドボックスがモデルのコードを実行します（ローカルではホスト上、Dockerでは独自の隔離境界であるコンテナ内）。
-- **docker-compose：** `DEEPTUTOR_SANDBOX_RUNNER_URL`経由でハードニングされた最小権限の**ランナーサイドカー**（`Dockerfile.runner`）にルーティングされます — 最も強固な姿勢であり、利用可能な場合は自動的に優先されます。
+- **ローカル（オプション2/4）とDocker（オプション3、単一コンテナ）：** 制限付きサブプロセスサンドボックスがモデルのコードを実行します（ローカルではホスト上、Dockerでは独自の隔離境界であるコンテナ内）。
+- **docker-compose：** `DEEPTUTOR_SANDBOX_RUNNER_URL`は実行をランナーサイドカー（`Dockerfile.runner`）へルーティングします。Linux Landlock ABI 6以上、Landlock erratum 3のkernel修正、`openat2`、規定どおりのbroker capabilityがすべて使える場合だけ起動します。各jobはfd固定workdirと不可逆なUID/GID/capability dropの後、Landlockとseccompにより別accountのfile内容・directory listing・filesystem監視・変更可能なpath metadata、signal、IP/Unix socket、SysV/POSIX IPCから隔離されます。jobは直列化され、子孫processは終了・回収され、outputはstream中に上限管理されます。TCP・UDPを含むoutbound IP socketは意図的に利用できません。このprofileは既知pathの存在と基本的な`stat` metadataまでは隠しません。`scripts/docker_compose.py`はownerだけが読めるcontrol tokenを`data/system/sandbox-runner.token`に生成し、生成済みCompose env fileを介してappとRunnerへ注入します。専用internal networkにはこの2 serviceだけが参加します。認証付きv3 endpointはcredential不在・不一致とhardening前のv2 Runnerを拒否し、`scripts/verify_runner_p0.py`は実装済み隔離境界の実container regressionを実行します。
+
+  shared volumeで同一UIDを使う構成のaccount横断metadata経路を閉じるため、このprofileはjob自身のworkdirを含むjob全体で`chmod` / `chown`、timestamp・xattr操作、filesystem監視、明示的な`readlink`を拒否します。そのためmode・timestampを保存するtoolやsymlink targetを調べるtoolはCompose Runner上で失敗する場合があります。
+
+  **可用性の境界：** 現在はjobごとの独立cgroupと、許可workspaceのstorage quotaがありません。悪意あるjobは子process間でmemory・CPU・PID消費を合算したり、共有filesystemを消費したりできます。job単位compute limitとstorage quotaの専用container regressionが揃うまで、敵対的multi-tenant production向けに受入済みとは扱えません。現在のgateが確認するのは上記の隔離境界とstdout/stderrのstream上限であり、aggregate resource exhaustionではありません。
 
 サブプロセスサンドボックスは`data/user/settings/system.json`の`sandbox_allow_subprocess`設定で制御されます（デフォルト`true`）。ホスト上でモデル生成コードを実行することは実際の信頼上の決定です — ホスト側実行を無効にするには`false`に設定するか（または`DEEPTUTOR_SANDBOX_ALLOW_SUBPROCESS=0`をエクスポート）、オフィススキルがファイルを生成できなくなることに注意してください。
 
@@ -310,7 +314,7 @@ Chatはデフォルト機能であり、ほとんどの作業が始まる場所�
 <img src="../../assets/figs/system/chat-agent-loop.png" alt="DeepTutorチャットエージェントループ" width="900">
 </div>
 
-ユーザーが切り替えられるツールは`brainstorm`、`web_search`、`paper_search`、`reason`、`geogebra_analysis` — 加えて、対応する生成モデルを設定すれば`imagegen`と`videogen`も利用できます。`rag`、`kb_files`、`read_source`、`read_memory`、`write_memory`、`read_skill`、`load_tools`、`exec`、`web_fetch`、`ask_user`、`list_notebook`、`write_note`、`github`、`consult_subagent`などのコンテキスト依存ツールは、ターンに適切なコンテキストがある場合に自動的にマウントされます。
+ユーザーが切り替えられるツールは`brainstorm`、`web_search`、`paper_search`、`reason`、`geogebra_analysis`、`imagegen`、`videogen`です。画像・動画生成はモデル設定前でも切り替えできますが、実行には対応する生成モデルが必要です。`rag`、`kb_files`、`read_source`、`read_memory`、`write_memory`、`read_skill`、`load_tools`、`exec`、`web_fetch`、`ask_user`、`list_notebook`、`write_note`、`github`、`consult_subagent`などのコンテキスト依存ツールは、ターンに適切なコンテキストがある場合に自動的にマウントされます。
 
 コンテキストには2種類あります：**スティッキーセッションコンテキスト**（サブエージェント、知識ベース、ペルソナ、モデル、音声）はコンポーザーツールバーに常駐し、ターンをまたいで持続します。**ワンタイム参照**（ファイル、チャット履歴、本、ノートブック、問題バンク、インポートしたエージェント）は単一のターンのために`+`メニューから追加します。
 
@@ -543,7 +547,7 @@ SID=$(deeptutor run deep_research "Survey 2026 papers on RAG" \
 deeptutor run deep_question "Quiz me on that survey" --session "$SID" --format json
 ```
 
-リポジトリにはルートの[`SKILL.md`](../../SKILL.md)が含まれています — ツール使用可能なLLMにサーフェス全体を1回の読み取りで教える約150行のハンドオーバードキュメント。Claude Code、Codex、OpenCodeに渡してください（これらは`SKILL.md`を自動的に取得します）、または`deeptutor run`をLangChain / AutoGenループのツールとしてラップしてください。完全なレシピ：[Agent Handoff](https://deeptutor.info/docs/cli/agent-handoff/)。
+リポジトリには、ツール使用可能なLLMへCLIサーフェスを教える手動ハンドオーバーとして、ルートの[`SKILL.md`](../../SKILL.md)が含まれています。Claude Code、Codex、OpenCodeへ明示的に渡し、自動検出を想定しないでください。または、`deeptutor run`をLangChain / AutoGenループのツールとしてラップできます。完全なレシピ：[Agent Handoff](https://deeptutor.info/docs/cli/agent-handoff/)。
 
 </details>
 

@@ -30,6 +30,25 @@ from deeptutor.services.sandbox.spec import (
     IsolationLevel,
 )
 
+_RUNNER_PROTOCOL = 3
+_RUNNER_SECURITY_PROFILE = "landlock-v6-fd-v3"
+_RUNNER_REQUIRED_LANDLOCK_ERRATA = 1 << (3 - 1)
+_RUNNER_REQUIRED_FEATURES = {
+    "bounded-output-streaming",
+    "bearer-control-auth",
+    "credential-drop",
+    "fd-pinned-workdir",
+    "landlock-abstract-unix-scope",
+    "landlock-errata-3",
+    "landlock-signal-scope",
+    "landlock-tcp-deny",
+    "seccomp-fs-notify-deny",
+    "seccomp-ipc-and-socket-deny",
+    "seccomp-path-metadata-deny",
+    "seccomp-cross-process-deny",
+    "single-active-job",
+}
+
 
 class SandboxBackend:
     """Abstract execution backend."""
@@ -49,16 +68,26 @@ class RunnerSidecarBackend(SandboxBackend):
 
     level = IsolationLevel.SYSTEM
 
-    def __init__(self, base_url: str, *, connect_timeout_s: float = 5.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        control_token: str = "",
+        connect_timeout_s: float = 5.0,
+    ) -> None:
         self._base_url = base_url.rstrip("/")
+        self._control_token = control_token
         self._connect_timeout_s = connect_timeout_s
+
+    def _auth_headers(self) -> dict[str, str]:
+        if len(self._control_token) < 43:
+            raise ValueError("runner control token is missing or invalid")
+        return {"Authorization": f"Bearer {self._control_token}"}
 
     async def exec(self, request: ExecRequest) -> ExecResult:
         payload = {
-            # Both spellings travel. A runner that understands ``argv`` prefers
-            # it and runs without a shell; an older image ignores the unknown
-            # field and executes the equivalent shell string. That keeps a
-            # rolling deploy correct in either order, with no version handshake.
+            # Both spellings travel and must agree. argv remains authoritative;
+            # command is the shell form used only for model-authored shell jobs.
             "command": request.command,
             "argv": list(request.argv),
             "workdir": request.workdir,
@@ -86,10 +115,18 @@ class RunnerSidecarBackend(SandboxBackend):
         )
         try:
             async with httpx.AsyncClient(timeout=http_timeout) as client:
-                resp = await client.post(f"{self._base_url}/exec", json=payload)
+                # The authenticated versioned path is fail-closed: a
+                # pre-hardening runner cannot execute this request.
+                resp = await client.post(
+                    f"{self._base_url}/v3/exec",
+                    json=payload,
+                    headers=self._auth_headers(),
+                )
                 resp.raise_for_status()
                 data = resp.json()
-        except httpx.HTTPError as exc:
+                if data.get("security_profile") != _RUNNER_SECURITY_PROFILE:
+                    raise ValueError("runner security profile mismatch")
+        except (httpx.HTTPError, TypeError, ValueError) as exc:
             return ExecResult(error=f"runner unavailable: {type(exc).__name__}: {exc}")
         return ExecResult(
             stdout=str(data.get("stdout", "")),
@@ -102,11 +139,29 @@ class RunnerSidecarBackend(SandboxBackend):
     async def health(self) -> tuple[bool, str]:
         try:
             async with httpx.AsyncClient(timeout=self._connect_timeout_s) as client:
-                resp = await client.get(f"{self._base_url}/health")
+                resp = await client.get(
+                    f"{self._base_url}/health",
+                    headers=self._auth_headers(),
+                )
                 resp.raise_for_status()
-            return True, "runner reachable"
-        except httpx.HTTPError as exc:
-            return False, f"runner unreachable: {type(exc).__name__}"
+                data = resp.json()
+            features = set(data.get("features") or [])
+            if (
+                data.get("status") != "ok"
+                or data.get("protocol") != _RUNNER_PROTOCOL
+                or data.get("security_profile") != _RUNNER_SECURITY_PROFILE
+                or data.get("worker_self_test") is not True
+                or int(data.get("landlock_abi", 0)) < 6
+                or int(data.get("landlock_errata", 0)) & _RUNNER_REQUIRED_LANDLOCK_ERRATA
+                != _RUNNER_REQUIRED_LANDLOCK_ERRATA
+                or not _RUNNER_REQUIRED_FEATURES.issubset(features)
+            ):
+                return False, "runner security attestation mismatch"
+            return True, (
+                f"runner {_RUNNER_SECURITY_PROFILE} ready (Landlock ABI {data['landlock_abi']})"
+            )
+        except (httpx.HTTPError, TypeError, ValueError) as exc:
+            return False, f"runner unavailable: {type(exc).__name__}: {exc}"
 
 
 class BwrapBackend(SandboxBackend):

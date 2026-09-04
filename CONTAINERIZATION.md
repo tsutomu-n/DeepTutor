@@ -382,12 +382,35 @@ renormalized on save.
 - `userns_mode: keep-id` on the host means a container escape lands
   with your host user's permissions, not root.
 - The sandbox-runner sidecar (in `docker-compose.yml`, **not** in
-  `compose.yaml`) is the strongest posture for untrusted model-generated
-  code: a sandbox escape lands in a stripped, unprivileged container
-  with no app secrets, not in the main app. The podman shape trades that
-  for the rootless-podman shape; the main app falls back to `bwrap` or
-  the restricted subprocess backend controlled by
+  `compose.yaml`) fails closed unless Landlock ABI 6+, the kernel fix for
+  Landlock erratum 3, `openat2`, and its exact broker capability profile are
+  available. The broker pins each workdir by fd; the job then drops to UID/GID
+  1000 with empty groups/capability sets before filesystem, TCP,
+  abstract-socket, signal, IPC/socket, and path-metadata policies are applied.
+  Sibling-account contents, directory listings, filesystem watches, and
+  metadata mutation are denied; known-path existence and basic `stat` metadata
+  are not hidden. Public jobs are serialized, their process groups are
+  terminated and reaped, and
+  outbound IP sockets (including TCP and UDP) are denied.
+  `scripts/docker_compose.py` creates the owner-only control token at
+  `data/system/sandbox-runner.token`; its generated `docker.env` is Compose
+  interpolation input, not application `.env` configuration. The app and runner
+  exchange it only on their dedicated internal network, and the authenticated
+  v3 API rejects old or unauthenticated callers. `scripts/verify_runner_p0.py`
+  exercises these boundaries in the built image. Because all account trees in
+  the shared volume use the same UID, this profile denies chmod/chown,
+  timestamp/xattr operations, filesystem watches, and explicit readlink calls
+  for the whole job, including its authorized workdir. Mode/timestamp-preserving
+  tools and symlink inspection can therefore fail. The podman shape instead
+  falls back to `bwrap` or the restricted subprocess backend controlled by
   `sandbox_allow_subprocess`.
+- The runner does not yet provide a separate cgroup per job or a storage quota
+  for the authorized workspace. Child processes can aggregate memory, CPU, and
+  PID consumption beyond the per-process rlimits, and a job can consume the
+  shared host filesystem. The real-container regression covers the stated
+  confidentiality/integrity controls and bounded output, not these availability
+  cases. Do not treat it as accepted for hostile multi-tenant production until
+  per-job compute and storage isolation are implemented and tested.
 - Auth (`data/user/settings/auth.json` → `auth_enabled = true`) gates
   `/api/*` and `/ws/*` via the `dt_token` cookie. `web/proxy.ts` reads
   `DEEPTUTOR_AUTH_ENABLED` (exported by the entrypoint on every start)

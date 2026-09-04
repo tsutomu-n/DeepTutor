@@ -13,6 +13,14 @@ PUBLIC_DOCS = (
     ROOT / "deeptutor_cli" / "README.md",
     ROOT / "SKILL.md",
 )
+PRIVATE_SOURCE_DOCS = (
+    ROOT / "AGENTS.md",
+    ROOT / "CONTRIBUTING.md",
+    ROOT / "README.md",
+    ROOT / "assets" / "README" / "README_JA.md",
+    ROOT / "deeptutor_cli" / "README.md",
+    ROOT / "SKILL.md",
+)
 HISTORICAL_UPSTREAM_TRANSLATIONS = {
     f"assets/README/README_{language}.md"
     for language in ("AR", "CN", "ES", "FR", "HI", "PL", "PT", "RU", "TH")
@@ -126,6 +134,113 @@ def test_docs_do_not_advertise_removed_cli_forms() -> None:
     assert "deeptutor provider logout" not in text
     assert "deeptutor memory show summary" not in text
     assert "WS /api/v1/turns" not in text
+
+
+def test_agent_architecture_doc_matches_runtime_contracts() -> None:
+    agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    normalized_agents = " ".join(agents.split())
+
+    assert "Seven user-toggleable tools" in agents
+    for tool_name in (
+        "brainstorm",
+        "web_search",
+        "paper_search",
+        "reason",
+        "geogebra_analysis",
+        "imagegen",
+        "videogen",
+    ):
+        assert f"`{tool_name}`" in agents
+    assert "`COMING_SOON_TOOL_TYPES` is currently empty." in normalized_agents
+    assert "remain mountable when enabled" in normalized_agents
+    assert "mounted only when their model is configured" not in normalized_agents
+    assert "deeptutor/agents/_shared/tool_composition.py" in agents
+    assert "deeptutor/agents/_shared/capability_result.py" in agents
+    assert "deeptutor/services/prompt/manager.py" in agents
+    assert "deeptutor/app/facade.py" in agents
+    assert "does not parse a project-root" in agents
+    assert "Raw Compose or Podman Compose may still consume that file" in agents
+    assert "data/user/settings/docker.env" in agents
+
+
+def test_private_install_docs_are_source_only() -> None:
+    public_wheel_commands = (
+        "pip install deeptutor",
+        "pip install deeptutor-cli",
+        "pip install -U deeptutor",
+    )
+
+    for path in PRIVATE_SOURCE_DOCS:
+        text = path.read_text(encoding="utf-8")
+        assert "JustPass" in text, f"{path.relative_to(ROOT)} omits the private project name"
+        for command in public_wheel_commands:
+            assert command not in text, f"{path.relative_to(ROOT)} advertises {command!r}"
+
+    install_guides = (
+        ROOT / "AGENTS.md",
+        ROOT / "README.md",
+        ROOT / "assets" / "README" / "README_JA.md",
+        ROOT / "deeptutor_cli" / "README.md",
+        ROOT / "SKILL.md",
+    )
+    for path in install_guides:
+        text = path.read_text(encoding="utf-8")
+        assert "python -m pip install -e ." in text
+        assert "python -m pip install -e ./packaging/deeptutor-cli" in text
+    assert "Python `>=3.11,<3.14`" in (ROOT / "SKILL.md").read_text(encoding="utf-8")
+
+
+def test_root_skill_and_readmes_require_manual_handover() -> None:
+    skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    readme_ja = (ROOT / "assets/README/README_JA.md").read_text(encoding="utf-8")
+
+    assert "manual handover" in skill.lower()
+    assert "automatic skill discovery is not assumed" in skill
+    assert "a bare reference defaults to `eduhub`" in skill
+    assert "do not assume automatic discovery" in readme
+    assert "自動検出を想定しないでください" in readme_ja
+    assert "pick up `SKILL.md` automatically" not in readme
+    assert "`SKILL.md`を自動的に取得します" not in readme_ja
+
+
+def test_runner_docs_describe_the_fail_closed_container_gate() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    readme_ja = (ROOT / "assets/README/README_JA.md").read_text(encoding="utf-8")
+
+    for contract in ("Landlock ABI", "openat2", "scripts/verify_runner_p0.py"):
+        assert contract in readme
+        assert contract in readme_ja
+    assert "Outbound IP sockets (including TCP and UDP) are intentionally unavailable" in readme
+    assert "TCP・UDPを含むoutbound IP socketは意図的に利用できません" in readme_ja
+    assert "authenticated v3 endpoint" in readme
+    assert "認証付きv3 endpoint" in readme_ja
+    assert "data/system/sandbox-runner.token" in readme_ja
+    assert "does not yet put each job in a" in readme
+    assert "jobごとの独立cgroup" in readme_ja
+    assert "Do not treat the runner as accepted" in readme
+    assert "敵対的multi-tenant production向けに受入済みとは扱えません" in readme_ja
+    assert "hardened, least-privileged" not in readme
+    assert "strongest posture" not in readme
+    assert "ハードニングされた最小権限" not in readme_ja
+    assert "最も強固な姿勢" not in readme_ja
+
+
+def test_private_solo_contribution_contract() -> None:
+    contributing = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+    normalized_contributing = " ".join(contributing.split())
+    pull_request = (ROOT / ".github/pull_request_template.md").read_text(encoding="utf-8")
+
+    assert "`main` as the integration branch" in contributing
+    assert "A feature branch is optional." in contributing
+    assert "A pull request is optional." in contributing
+    assert "are human decisions" in contributing
+    assert "git config core.hooksPath scripts/hooks" in contributing
+    assert "does not restrict direct commits to `main`" in normalized_contributing
+    assert "Never regenerate or wholesale overwrite `.secrets.baseline`." in contributing
+    assert "detect-secrets scan > .secrets.baseline" not in contributing
+    assert "intended for `main`" in pull_request
+    assert "github.com/HKUDS/DeepTutor/blob/dev" not in pull_request
 
 
 def test_tjm_readme_only_links_synchronized_translations() -> None:

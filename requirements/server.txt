@@ -1,11 +1,10 @@
 # ============================================
-# DeepTutor Server — Full Dependencies (CLI + Web)
+# DeepTutor Server — CLI + Web/API Bundle
 # ============================================
 # Mirrors pyproject.toml `[project.optional-dependencies].server`.
 # Keep in sync with pyproject.toml when adding/updating dependencies.
 #
-# Public install: pip install deeptutor
-# Source install: pip install -e .
+# Source install: python -m pip install -e .
 # Use this file for Docker/CI when pyproject.toml/source code aren't yet available.
 
 -r cli.txt
@@ -27,5 +26,3 @@ pocketbase>=0.12.0
 # --- LLM provider runtime (unconditionally imported by provider_core) ---
 loguru>=0.7.3,<1.0.0
 json-repair>=0.57.0,<1.0.0
-# Built-in cron service (chat & partner scheduled tasks)
-croniter>=6.0.0,<7.0.0

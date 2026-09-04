@@ -23,7 +23,7 @@ Only the English and Japanese guides are synchronized with the TJM fork. The
 other translations remain in the repository as historical upstream snapshots;
 do not use their installation or release instructions for this fork.
 
-[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/downloads/)
+[![Python 3.11–3.13](https://img.shields.io/badge/Python-3.11--3.13-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![Next.js 16](https://img.shields.io/badge/Next.js-16-000000?style=flat-square&logo=next.js&logoColor=white)](https://nextjs.org/)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue?style=flat-square)](LICENSE)
 [![GitHub release](https://img.shields.io/github/v/release/HKUDS/DeepTutor?style=flat-square&color=brightgreen)](https://github.com/HKUDS/DeepTutor/releases)
@@ -194,17 +194,20 @@ DeepTutor is an agent-native learning workspace that connects tutoring, problem 
 
 ## 🚀 Get Started
 
-DeepTutor ships four installation paths. They all share one workspace layout: settings live in `data/user/settings/` under the directory you launch from (or under `DEEPTUTOR_HOME` / `deeptutor start --home` if you set one explicitly). For the full app, the recommended flow is **pick a workspace directory → install → `deeptutor init` → `deeptutor start`**.
+This JustPass private fork is distributed source-only from an authorized checkout. The
+local source, locally built container, and CLI-only paths below share one
+workspace layout: settings live in `data/user/settings/` under the directory
+you launch from (or under `DEEPTUTOR_HOME` / `deeptutor start --home` if you
+set one explicitly). For the full app, the recommended flow is **pick a
+workspace directory → install → `deeptutor init` → `deeptutor start`**.
 
 <details>
-<summary><b>Option 1 — Install From PyPI</b> · not available for this TJM fork yet</summary>
+<summary><b>Option 1 — PyPI warning</b> · unsupported for this JustPass fork</summary>
 
 The public [`deeptutor` distribution](https://pypi.org/project/deeptutor/1.5.8/)
 currently resolves to the existing upstream package and does not contain TJM.
-This fork's validated wheel has not been published, and version `1.5.8` is
-already occupied on PyPI. Use the source installation below until the
-maintainer chooses an unused version and confirms the PyPI distribution
-ownership, or chooses a fork-specific distribution name.
+This fork is not published there. Do not use that public distribution for this
+checkout; use the authorized source installation below.
 
 </details>
 
@@ -230,7 +233,7 @@ deeptutor init
 deeptutor start --dev
 ```
 
-`deeptutor start` builds the local `web/` frontend for production once and reuses it; `--dev` runs Next.js with HMR. Config layout, ports, and `Ctrl+C` match Option 1.
+`deeptutor start` builds the local `web/` frontend for production once and reuses it; `--dev` runs Next.js with HMR. Both commands use the same local config layout, ports, and `Ctrl+C` shutdown behavior.
 
 <details>
 <summary><b>Conda environment</b> (instead of <code>venv</code>)</summary>
@@ -391,7 +394,12 @@ deeptutor config show
 
 </details>
 
-The local `deeptutor-cli` install ships no Web assets or server dependencies. Keep the source checkout around — the editable install points to it. To add the Web app later, install the PyPI package (Option 1) and run `deeptutor init` + `deeptutor start` from the same workspace.
+The local `deeptutor-cli` install ships no Web assets or server dependencies.
+Keep the source checkout around — the editable install points to it. To add the
+Web app later, uninstall the CLI-only distribution if necessary, then install
+the full app from the same checkout with `python -m pip install -e .`, install
+the `web/` dependencies, and run `deeptutor init` + `deeptutor start` from the
+same workspace.
 
 </details>
 
@@ -404,12 +412,40 @@ run it through the `exec` / `code_execution` tools, and hand back a download URL
 Those tools mount whenever a sandbox backend is active, which it is **by default**
 in every deployment shape:
 
-- **Local (Option 1 / 2) and Docker (Option 3, single container):** a restricted
+- **Local (Option 2 / 4) and Docker (Option 3, single container):** a restricted
   subprocess sandbox runs the model's code (on the host locally, or inside the
   container under Docker — the container being its own isolation boundary).
-- **docker-compose:** routed instead to a hardened, least-privileged **runner
-  sidecar** (`Dockerfile.runner`) via `DEEPTUTOR_SANDBOX_RUNNER_URL` — the
-  strongest posture, and preferred automatically when present.
+- **docker-compose:** `DEEPTUTOR_SANDBOX_RUNNER_URL` routes execution to the
+  runner sidecar (`Dockerfile.runner`). It starts only when Linux Landlock ABI
+  6+, `openat2`, and the exact broker capability profile are available. Each job
+  gets an fd-pinned workdir and an irreversible UID/GID/capability drop before
+  Landlock and seccomp deny sibling-account file contents, directory listings,
+  filesystem watches, mutable path metadata, signals, IP/Unix sockets, and
+  SysV/POSIX IPC. Startup also requires the kernel fix for Landlock erratum 3.
+  Jobs are serialized, descendants are killed/reaped, and output is bounded
+  while streaming.
+  Outbound IP sockets (including TCP and UDP) are intentionally unavailable.
+  Known-path existence and basic `stat` metadata are not hidden by this profile.
+  `scripts/docker_compose.py` creates an owner-only
+  control token at `data/system/sandbox-runner.token`, injects it into the app and runner through
+  its generated Compose env file, and the dedicated internal network contains
+  only those two services. The authenticated v3 endpoint rejects missing/wrong
+  credentials and pre-hardening v2 runners; `scripts/verify_runner_p0.py` runs
+  the implemented real-container isolation regressions.
+
+  The shared-volume profile closes same-UID cross-account metadata channels by
+  rejecting `chmod`/`chown`, timestamp and xattr operations, filesystem watches,
+  and explicit `readlink` calls for the entire job, including its own workdir.
+  Tools that preserve modes/timestamps or inspect symlink targets can therefore
+  fail under the Compose runner.
+
+  **Availability boundary:** this profile does not yet put each job in a
+  separate cgroup or apply a quota to its authorized workspace. A hostile job
+  can aggregate memory/CPU/PIDs across child processes or consume the shared
+  filesystem. Do not treat the runner as accepted for hostile multi-tenant
+  production until per-job compute limits and storage quotas have their own
+  container regressions. The current gate covers the isolation claims above and
+  bounded stdout/stderr, not those aggregate resource-exhaustion cases.
 
 The subprocess sandbox is controlled by the `sandbox_allow_subprocess` setting in
 `data/user/settings/system.json` (default `true`). Running model-generated code
@@ -470,7 +506,7 @@ The loop is deliberately simple: the model thinks in rounds, calls tools when us
 <img src="assets/figs/system/chat-agent-loop.png" alt="DeepTutor chat agent loop" width="900">
 </div>
 
-User-toggleable tools are `brainstorm`, `web_search`, `paper_search`, `reason`, and `geogebra_analysis` — plus `imagegen` and `videogen` once you configure the matching generation model. Contextual tools such as `rag`, `kb_files`, `read_source`, `read_memory`, `write_memory`, `read_skill`, `load_tools`, `exec`, `web_fetch`, `ask_user`, `list_notebook`, `write_note`, `github`, and `consult_subagent` mount automatically when the turn has the right context.
+User-toggleable tools are `brainstorm`, `web_search`, `paper_search`, `reason`, `geogebra_analysis`, `imagegen`, and `videogen`. Image and video generation remain toggleable before model setup, but execution requires the matching generation model. Contextual tools such as `rag`, `kb_files`, `read_source`, `read_memory`, `write_memory`, `read_skill`, `load_tools`, `exec`, `web_fetch`, `ask_user`, `list_notebook`, `write_note`, `github`, and `consult_subagent` mount automatically when the turn has the right context.
 
 Context comes in two kinds: **sticky session context** (subagent, knowledge bases, persona, model, voice) lives on the composer toolbar and persists across turns; **one-time references** (files, chat history, books, notebooks, question bank, imported agents) come from the `+` menu for a single turn.
 
@@ -703,7 +739,11 @@ SID=$(deeptutor run deep_research "Survey 2026 papers on RAG" \
 deeptutor run deep_question "Quiz me on that survey" --session "$SID" --format json
 ```
 
-The repo ships a root [`SKILL.md`](SKILL.md) — a ~150-line handover doc that teaches any tool-using LLM the whole surface in one read. Hand it to Claude Code, Codex, or OpenCode (they pick up `SKILL.md` automatically), or wrap `deeptutor run` as a tool in a LangChain / AutoGen loop. Full recipes: [Agent Handoff](https://deeptutor.info/docs/cli/agent-handoff/).
+The repo ships a root [`SKILL.md`](SKILL.md) as a manual handover that teaches
+a tool-using LLM the CLI surface. Give it explicitly to Claude Code, Codex, or
+OpenCode; do not assume automatic discovery. You can also wrap `deeptutor run`
+as a tool in a LangChain / AutoGen loop. Full recipes: [Agent
+Handoff](https://deeptutor.info/docs/cli/agent-handoff/).
 
 </details>
 

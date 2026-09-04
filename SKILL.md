@@ -1,6 +1,8 @@
-# DeepTutor CLI Skill
+# DeepTutor CLI Manual Handover
 
-> Teach your AI agent to configure, manage, and use DeepTutor — an intelligent learning platform — entirely through the command line.
+> Repository-root manual handover for teaching an AI agent to configure,
+> manage, and use DeepTutor entirely through the command line. Give this file
+> to the agent explicitly; automatic skill discovery is not assumed.
 
 ## When to Use
 
@@ -9,15 +11,15 @@ Use this skill when the user wants to:
 - Chat with DeepTutor or run a capability (deep solve, quiz generation, deep research, visualize, math animation, mastery path)
 - Create, manage, or search knowledge bases
 - Create, manage, or run Partners (IM-connected companions)
-- Search, install, or manage skills from a hub (ClawHub)
+- Search, install, or manage skills from a hub (EduHub by default)
 - Inspect or maintain interactive Books
 - View or manage learning memory, sessions, or notebooks
 - Start the DeepTutor API server or the full Web app
 
 ## Prerequisites
 
-- Python 3.11+
-- DeepTutor installed: `pip install deeptutor` for the full Web app, `pip install deeptutor-cli` for CLI-only, or `pip install -e .` from a source checkout
+- Python `>=3.11,<3.14`
+- DeepTutor installed from an authorized JustPass source checkout: `python -m pip install -e .` for the full app, or `python -m pip install -e ./packaging/deeptutor-cli` for CLI-only
 - Run `deeptutor init` for first-time interactive setup. It walks a guided wizard (ports → LLM → embedding → search → review) and writes the same settings as the Web Settings page under `data/user/settings`. Add `--cli` to skip the ports step for CLI-only use, or `--home <path>` to target a specific workspace.
 
 ## Commands
@@ -85,12 +87,12 @@ deeptutor partner stop <id>                         # Stop a running partner
 
 ### Skills
 
-Install and manage skills, including packages from external hubs (ClawHub).
-Hub refs use `<hub>:<slug>[@version]` (the hub prefix defaults to `clawhub`).
+Install and manage skills, including packages from external hubs. Hub refs use
+`<hub>:<slug>[@version]`; a bare reference defaults to `eduhub`.
 
 ```bash
-deeptutor skill search "flashcards" [--hub clawhub] [--limit 10]
-deeptutor skill install clawhub:some-skill[@1.2.0] [--name local-name] [--force] [--allow-unverified]
+deeptutor skill search "flashcards" [--hub eduhub] [--limit 10]
+deeptutor skill install eduhub:some-skill[@1.2.0] [--name local-name] [--force] [--allow-unverified]
 deeptutor skill list                                # List local skills (with hub provenance)
 deeptutor skill remove <name>                       # Remove a user-layer skill
 ```
@@ -177,7 +179,7 @@ Inside `deeptutor chat`, use these:
 **First-time setup:**
 ```bash
 cd DeepTutor
-pip install -e .
+python -m pip install -e .
 deeptutor init        # Interactive guided setup (add --cli for CLI-only)
 ```
 

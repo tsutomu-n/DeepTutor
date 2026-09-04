@@ -4,7 +4,8 @@ Sandbox configuration and backend selection.
 The active backend is chosen from environment so it tracks the deployment
 shape without per-user config:
 
-* ``DEEPTUTOR_SANDBOX_RUNNER_URL`` set ⇒ runner sidecar (Docker deployment);
+* ``DEEPTUTOR_SANDBOX_RUNNER_URL`` plus its generated
+  ``DEEPTUTOR_SANDBOX_RUNNER_TOKEN`` ⇒ runner sidecar (Docker deployment);
 * else on Linux with a functional ``bwrap`` ⇒ bwrap (bare-metal);
 * else, only when ``DEEPTUTOR_SANDBOX_ALLOW_SUBPROCESS=1`` ⇒ restricted
   subprocess (admin-opt-in local dev — APPLICATION isolation only);
@@ -30,6 +31,7 @@ from deeptutor.services.sandbox.backends import (
 from deeptutor.services.sandbox.spec import ResourceLimits
 
 RUNNER_URL_ENV = "DEEPTUTOR_SANDBOX_RUNNER_URL"
+RUNNER_TOKEN_ENV = "DEEPTUTOR_SANDBOX_RUNNER_TOKEN"
 ALLOW_SUBPROCESS_ENV = "DEEPTUTOR_SANDBOX_ALLOW_SUBPROCESS"
 
 # Per-user execution quotas (see quota.py). Conservative defaults; override
@@ -41,6 +43,7 @@ MAX_PER_MINUTE_ENV = "DEEPTUTOR_SANDBOX_MAX_PER_MINUTE"
 @dataclass(frozen=True)
 class SandboxSettings:
     runner_url: str = ""
+    runner_token: str = ""
     allow_subprocess: bool = False
     default_limits: ResourceLimits = ResourceLimits()
     max_concurrent_per_user: int = 2
@@ -56,6 +59,7 @@ class SandboxSettings:
 
         return cls(
             runner_url=os.environ.get(RUNNER_URL_ENV, "").strip(),
+            runner_token=os.environ.get(RUNNER_TOKEN_ENV, "").strip(),
             allow_subprocess=os.environ.get(ALLOW_SUBPROCESS_ENV, "").strip()
             in {"1", "true", "yes"},
             max_concurrent_per_user=_int(MAX_CONCURRENT_ENV, 2),
@@ -73,7 +77,7 @@ def build_backend(settings: SandboxSettings) -> SandboxBackend | None:
     import sys
 
     if settings.runner_url:
-        return RunnerSidecarBackend(settings.runner_url)
+        return RunnerSidecarBackend(settings.runner_url, control_token=settings.runner_token)
     if sys.platform.startswith("linux"):
         import shutil
 
@@ -87,6 +91,7 @@ def build_backend(settings: SandboxSettings) -> SandboxBackend | None:
 __all__ = [
     "ALLOW_SUBPROCESS_ENV",
     "RUNNER_URL_ENV",
+    "RUNNER_TOKEN_ENV",
     "SandboxSettings",
     "build_backend",
 ]

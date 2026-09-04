@@ -61,10 +61,9 @@ class ExecRequest:
     When ``argv`` is set a backend runs it **without a shell**, which is how a
     caller that assembles arguments from model output (a CLI app invocation)
     avoids shell metacharacters mattering at all. ``command`` still holds the
-    equivalent shell string, produced by :meth:`of_argv` via ``shlex.join``, so a
-    runner sidecar built before ``argv`` existed keeps working — an older image is
-    the normal state of affairs during a rolling deploy, and a request it does not
-    fully understand must degrade to a correct execution rather than a wrong one.
+    equivalent shell string, produced by :meth:`of_argv` via ``shlex.join``. The
+    hardened runner protocol is explicitly versioned and rejects older sidecars;
+    the duplicate form is therefore an invariant, not a rolling-deploy fallback.
     """
 
     command: str
@@ -79,7 +78,7 @@ class ExecRequest:
         # The two fields must describe the same execution. Constructing them
         # separately is the mistake this forbids: a caller that set `argv` and
         # left `command` at some earlier value would run one thing on a new
-        # runner and a different thing on an old one.
+        # runner and a different thing on another backend.
         if self.argv and self.command != shlex.join(self.argv):
             raise ValueError(
                 "ExecRequest.argv and .command disagree; build argv requests with "
